@@ -12,8 +12,8 @@
 
   // ---------- Constants ----------
   const USERS = {
-    cj:      { name: 'CJ',      region: '澳大利亚', email: 'cj@example.com' },
-    katrina: { name: 'Katrina', region: '中国',     email: 'katrina@example.com' },
+    cj:      { name: 'CJ',      region: '澳大利亚', email: 'juntaochen718@foxmail.com' },
+    katrina: { name: 'Katrina', region: '中国',     email: '1huangkat@hdsb.ca' },
   };
   const EMAIL_TO_USER = {};
   for (const k in USERS) EMAIL_TO_USER[USERS[k].email] = USERS[k];
