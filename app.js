@@ -10,6 +10,9 @@
   const KJ_TO_KCAL = 1 / 4.184;
   const STORAGE_PREFIX = 'calorie_calc_v1_';
   const CURRENT_USER_KEY = 'calorie_calc_v1_current_user';
+  const SYNC_TOKEN_KEY = 'calorie_calc_v1_sync_token';
+  const SYNC_GIST_KEY = 'calorie_calc_v1_sync_gist';
+  const PUSH_DEBOUNCE_MS = 3000;
 
   // ---------- State ----------
   let currentUser = null;
@@ -17,6 +20,9 @@
   let statsRange = 'week';
   let inputMode = 'direct';
   let midnightTimer = null;
+  let pushTimer = null;
+  let pushInFlight = false;
+  let pullInFlight = false;
 
   // ---------- Utils ----------
   function todayStr() {
@@ -62,11 +68,15 @@
       threshold: DEFAULT_THRESHOLD,
       currentDay: { date: todayStr(), entries: [] },
       history: {},
+      // No updatedAt — treated as "never modified" so remote always wins
     };
   }
-  function saveUserData() {
+  function saveUserData(opts) {
     if (!currentUser || !data) return;
+    const skipSync = opts && opts.skipSync;
+    if (!skipSync) data.updatedAt = new Date().toISOString();
     localStorage.setItem(storageKey(currentUser), JSON.stringify(data));
+    if (!skipSync) schedulePush();
   }
   function setCurrentUser(user) {
     currentUser = user;
@@ -75,6 +85,7 @@
     rolloverIfNeeded();
     scheduleMidnight();
     renderAll();
+    tryPullThenMaybePush();
   }
   function getStoredUser() {
     return localStorage.getItem(CURRENT_USER_KEY);
@@ -106,6 +117,142 @@
       renderAll();
       scheduleMidnight();
     }, ms);
+  }
+
+  // ---------- Cloud sync (GitHub Gist) ----------
+  function getSyncConfig() {
+    return {
+      token: (localStorage.getItem(SYNC_TOKEN_KEY) || '').trim(),
+      gistId: (localStorage.getItem(SYNC_GIST_KEY) || '').trim(),
+    };
+  }
+  function setSyncBadge(state, msg) {
+    const el = $('#syncBadge');
+    if (!el) return;
+    el.classList.remove('ok', 'syncing', 'error');
+    if (state === 'idle') {
+      el.textContent = msg || '未启用';
+    } else if (state === 'syncing') {
+      el.classList.add('syncing');
+      el.textContent = msg || '同步中…';
+    } else if (state === 'ok') {
+      el.classList.add('ok');
+      el.textContent = msg || '已同步';
+    } else if (state === 'error') {
+      el.classList.add('error');
+      el.textContent = msg || '同步失败';
+    }
+  }
+  async function gistRequest(method, path, body) {
+    const { token } = getSyncConfig();
+    const url = `https://api.github.com${path}`;
+    const headers = {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const opts = { method, headers };
+    if (body) {
+      headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(url, opts);
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`GitHub API ${res.status}: ${text.slice(0, 200)}`);
+    }
+    return res.json();
+  }
+  async function pullFromGist() {
+    const { token, gistId } = getSyncConfig();
+    if (!token || !gistId) return null;
+    const j = await gistRequest('GET', `/gists/${gistId}`);
+    const filename = `${currentUser}.json`;
+    const file = j.files && j.files[filename];
+    if (!file || !file.content) return null;
+    try {
+      return JSON.parse(file.content);
+    } catch (e) {
+      return null;
+    }
+  }
+  async function pushToGist() {
+    const { token, gistId } = getSyncConfig();
+    if (!token || !currentUser) return;
+    pushInFlight = true;
+    setSyncBadge('syncing', '上传中…');
+    try {
+      const filename = `${currentUser}.json`;
+      const body = {
+        files: { [filename]: { content: JSON.stringify(data) } },
+      };
+      let result;
+      if (gistId) {
+        result = await gistRequest('PATCH', `/gists/${gistId}`, body);
+      } else {
+        body.description = 'Calorie Calculator sync';
+        body.public = false;
+        result = await gistRequest('POST', '/gists', body);
+        localStorage.setItem(SYNC_GIST_KEY, result.id);
+        const inp = $('#syncGistInput');
+        if (inp) inp.value = result.id;
+      }
+      setSyncBadge('ok', '已同步');
+    } catch (e) {
+      console.warn('push failed', e);
+      setSyncBadge('error', '同步失败');
+    } finally {
+      pushInFlight = false;
+    }
+  }
+  function schedulePush() {
+    const { token } = getSyncConfig();
+    if (!token) return;
+    if (pushTimer) clearTimeout(pushTimer);
+    setSyncBadge('syncing', '等待上传');
+    pushTimer = setTimeout(() => {
+      pushTimer = null;
+      pushToGist();
+    }, PUSH_DEBOUNCE_MS);
+  }
+  async function tryPullThenMaybePush() {
+    const { token, gistId } = getSyncConfig();
+    if (!token) {
+      setSyncBadge('idle', '未启用');
+      return;
+    }
+    if (pullInFlight) return;
+    pullInFlight = true;
+    if (pushTimer) { clearTimeout(pushTimer); pushTimer = null; }
+    setSyncBadge('syncing', '同步中…');
+    try {
+      if (!gistId) {
+        await pushToGist();
+        return;
+      }
+      const remote = await pullFromGist();
+      const localTime = data.updatedAt ? new Date(data.updatedAt).getTime() : 0;
+      const remoteTime = remote && remote.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
+      if (remoteTime > localTime) {
+        data = remote;
+        if (!data.currentDay) data.currentDay = { date: todayStr(), entries: [] };
+        if (!data.history) data.history = {};
+        if (typeof data.threshold !== 'number') data.threshold = DEFAULT_THRESHOLD;
+        rolloverIfNeeded();
+        saveUserData({ skipSync: true });
+        renderAll();
+        setSyncBadge('ok', '已同步');
+      } else if (localTime > remoteTime) {
+        await pushToGist();
+      } else {
+        setSyncBadge('ok', '已同步');
+      }
+    } catch (e) {
+      console.warn('pull failed', e);
+      setSyncBadge('error', '同步失败');
+    } finally {
+      pullInFlight = false;
+    }
   }
 
   // ---------- IP detection ----------
@@ -399,6 +546,10 @@
 
   function renderSettings() {
     $('#thresholdInput').value = data.threshold || DEFAULT_THRESHOLD;
+    const { token, gistId } = getSyncConfig();
+    $('#syncTokenInput').value = token;
+    $('#syncGistInput').value = gistId;
+    if (!token) setSyncBadge('idle', '未启用');
   }
 
   // ---------- Event wiring ----------
@@ -475,11 +626,35 @@
       renderAll();
       alert('已清除');
     });
-    // Re-check rollover when tab regains focus
+    // Sync: save token + gist id
+    $('#saveSyncBtn').addEventListener('click', async () => {
+      const token = $('#syncTokenInput').value.trim();
+      const gistId = $('#syncGistInput').value.trim();
+      if (!token) {
+        localStorage.removeItem(SYNC_TOKEN_KEY);
+        localStorage.removeItem(SYNC_GIST_KEY);
+        setSyncBadge('idle', '未启用');
+        alert('已关闭云同步（仅本地存储）');
+        return;
+      }
+      localStorage.setItem(SYNC_TOKEN_KEY, token);
+      if (gistId) localStorage.setItem(SYNC_GIST_KEY, gistId);
+      else localStorage.removeItem(SYNC_GIST_KEY);
+      await tryPullThenMaybePush();
+      // Refresh inputs (gist id may have been filled by auto-create)
+      const cfg = getSyncConfig();
+      $('#syncGistInput').value = cfg.gistId;
+    });
+    // Sync: manual sync now
+    $('#syncNowBtn').addEventListener('click', () => {
+      tryPullThenMaybePush();
+    });
+    // Re-check rollover and sync when tab regains focus
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && data) {
         rolloverIfNeeded();
         renderAll();
+        tryPullThenMaybePush();
       }
     });
   }
