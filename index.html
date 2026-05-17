@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>卡路里计算器</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- 用户选择遮罩 (首次进入或IP识别失败时) -->
+  <div id="userPickerOverlay" class="overlay hidden">
+    <div class="overlay-card">
+      <h2>选择用户</h2>
+      <p class="muted" id="pickerHint">正在识别您的位置…</p>
+      <div class="picker-buttons">
+        <button class="user-btn" data-user="CJ">
+          <span class="flag">🇦🇺</span>
+          <span class="name">CJ</span>
+          <span class="region">澳大利亚</span>
+        </button>
+        <button class="user-btn" data-user="Katrina">
+          <span class="flag">🇨🇳</span>
+          <span class="name">Katrina</span>
+          <span class="region">中国</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <header class="app-header">
+    <div class="brand">🍎 卡路里计算器</div>
+    <div class="header-right">
+      <button id="switchUserBtn" class="ghost-btn" title="切换用户">
+        <span id="currentUserBadge">--</span>
+        <span class="caret">▾</span>
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="today">今日</button>
+    <button class="tab" data-tab="stats">统计</button>
+    <button class="tab" data-tab="settings">设置</button>
+  </nav>
+
+  <main>
+    <!-- 今日 -->
+    <section id="tab-today" class="tab-panel active">
+      <div class="date-line" id="dateLine">--</div>
+
+      <div class="summary-card">
+        <div class="summary-row">
+          <div class="summary-item">
+            <div class="label">已摄入</div>
+            <div class="value" id="totalToday">0</div>
+            <div class="unit">大卡</div>
+          </div>
+          <div class="summary-item">
+            <div class="label">剩余</div>
+            <div class="value" id="remaining">0</div>
+            <div class="unit">大卡</div>
+          </div>
+        </div>
+        <div class="progress-wrap">
+          <div class="progress" id="progressBar"></div>
+        </div>
+        <div class="progress-text" id="progressText">0 / 0 大卡</div>
+      </div>
+
+      <div id="lastEntryToast" class="last-entry hidden"></div>
+
+      <div class="card">
+        <h3>添加食物</h3>
+        <div class="mode-switch">
+          <button class="mode-btn active" data-mode="direct">直接输入</button>
+          <button class="mode-btn" data-mode="quantity">按重量/体积</button>
+        </div>
+
+        <!-- 模式1: 直接输入 -->
+        <div class="mode-panel" id="mode-direct">
+          <label>食物名称
+            <input type="text" id="d_name" placeholder="如：苹果" />
+          </label>
+          <div class="row">
+            <label class="flex">数值
+              <input type="number" id="d_amount" placeholder="例如 250" inputmode="decimal" />
+            </label>
+            <label>单位
+              <select id="d_unit">
+                <option value="kcal">大卡 (kcal)</option>
+                <option value="kj">千焦 (kJ)</option>
+              </select>
+            </label>
+          </div>
+          <button class="primary-btn" id="addDirectBtn">添加</button>
+        </div>
+
+        <!-- 模式2: 按量计算 -->
+        <div class="mode-panel hidden" id="mode-quantity">
+          <label>食物名称
+            <input type="text" id="q_name" placeholder="如：牛肉" />
+          </label>
+          <div class="row">
+            <label class="flex">摄入量
+              <input type="number" id="q_amount" placeholder="例如 300" inputmode="decimal" />
+            </label>
+            <label>单位
+              <select id="q_unit">
+                <option value="g">克 (g)</option>
+                <option value="ml">毫升 (ml)</option>
+              </select>
+            </label>
+          </div>
+          <div class="row">
+            <label class="flex">每 100 <span id="q_per_unit">克</span> 含
+              <input type="number" id="q_per100" placeholder="例如 250" inputmode="decimal" />
+            </label>
+            <span class="kcal-suffix">大卡</span>
+          </div>
+          <div class="preview" id="q_preview">≈ 0 大卡</div>
+          <button class="primary-btn" id="addQuantityBtn">添加</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>今日记录</h3>
+        <ul class="entry-list" id="entryList">
+          <li class="empty">还没有记录，添加第一项吧</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- 统计 -->
+    <section id="tab-stats" class="tab-panel">
+      <div class="card">
+        <div class="stats-header">
+          <h3>历史统计</h3>
+          <div class="range-switch">
+            <button class="range-btn active" data-range="week">最近 7 天</button>
+            <button class="range-btn" data-range="month">最近 30 天</button>
+          </div>
+        </div>
+        <div class="stats-summary" id="statsSummary"></div>
+        <div class="chart" id="chart"></div>
+        <ul class="history-list" id="historyList"></ul>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section id="tab-settings" class="tab-panel">
+      <div class="card">
+        <h3>每日摄入阈值</h3>
+        <p class="muted">超过该值时进度条会提示。</p>
+        <div class="row">
+          <label class="flex">
+            <input type="number" id="thresholdInput" placeholder="例如 2000" inputmode="decimal" />
+          </label>
+          <span class="kcal-suffix">大卡</span>
+        </div>
+        <button class="primary-btn" id="saveThresholdBtn">保存</button>
+      </div>
+
+      <div class="card">
+        <h3>当前用户</h3>
+        <p class="muted">数据按用户独立存储，不会互相干扰。</p>
+        <div class="user-line">
+          <span id="settingsUserName">--</span>
+          <button class="secondary-btn" id="changeUserBtn">切换</button>
+        </div>
+      </div>
+
+      <div class="card danger">
+        <h3>清除当前用户数据</h3>
+        <p class="muted">将删除当前用户的所有记录与历史，无法恢复。</p>
+        <button class="danger-btn" id="clearDataBtn">清除数据</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
