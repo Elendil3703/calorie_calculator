@@ -6,7 +6,7 @@
   //  Supabase 项目 → Project Settings → API
   //  这两个值可以公开（anon key 设计给前端用，权限由 RLS 控制）
   // ====================================================================
-  const SUPABASE_URL = 'https://exirxesaxbqhfxddgocf.supabase.co/rest/v1/';
+  const SUPABASE_URL = 'https://exirxesaxbqhfxddgocf.supabase.co';
   const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV4aXJ4ZXNheGJxaGZ4ZGRnb2NmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwMjAyMTIsImV4cCI6MjA5NDU5NjIxMn0.wCbbj_amBhkU9wFZkW2OKYhfsd6R3LZTd6XZ4NItV1E';
   // ====================================================================
 
