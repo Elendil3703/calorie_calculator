@@ -421,6 +421,27 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
   padding: 8px 0 12px;
 }
 
+/* Login form */
+.login-card {
+  text-align: left;
+  max-width: 340px;
+}
+.login-card h2 { text-align: center; margin-bottom: 4px; }
+.login-card p.muted { text-align: center; margin-bottom: 16px; }
+.login-card label {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+.login-card .primary-btn { margin-top: 4px; }
+.error-text {
+  color: var(--danger);
+  font-size: 13px;
+  text-align: center;
+  margin-top: 12px;
+  min-height: 18px;
+}
+
 .help-details {
   margin-top: 12px;
   background: #f9fafb;

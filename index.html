@@ -7,32 +7,31 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- 用户选择遮罩 (首次进入或IP识别失败时) -->
-  <div id="userPickerOverlay" class="overlay hidden">
-    <div class="overlay-card">
-      <h2>选择用户</h2>
-      <p class="muted" id="pickerHint">正在识别您的位置…</p>
-      <div class="picker-buttons">
-        <button class="user-btn" data-user="CJ">
-          <span class="flag">🇦🇺</span>
-          <span class="name">CJ</span>
-          <span class="region">澳大利亚</span>
-        </button>
-        <button class="user-btn" data-user="Katrina">
-          <span class="flag">🇨🇳</span>
-          <span class="name">Katrina</span>
-          <span class="region">中国</span>
-        </button>
-      </div>
+  <!-- 登录遮罩 -->
+  <div id="loginOverlay" class="overlay">
+    <div class="overlay-card login-card">
+      <h2>🍎 卡路里计算器</h2>
+      <p class="muted">登录账号开始记录</p>
+      <label>用户
+        <select id="loginUser">
+          <option value="cj">🇦🇺 CJ</option>
+          <option value="katrina">🇨🇳 Katrina</option>
+        </select>
+      </label>
+      <label>密码
+        <input type="password" id="loginPassword" placeholder="密码" autocomplete="current-password" />
+      </label>
+      <button class="primary-btn" id="loginBtn">登录</button>
+      <p class="error-text" id="loginError"></p>
     </div>
   </div>
 
   <header class="app-header">
     <div class="brand">🍎 卡路里计算器</div>
     <div class="header-right">
-      <button id="switchUserBtn" class="ghost-btn" title="切换用户">
+      <button id="logoutBtn" class="ghost-btn" title="登出">
         <span id="currentUserBadge">--</span>
-        <span class="caret">▾</span>
+        <span class="caret">⏏</span>
       </button>
     </div>
   </header>
@@ -76,7 +75,6 @@
           <button class="mode-btn" data-mode="quantity">按重量/体积</button>
         </div>
 
-        <!-- 模式1: 直接输入 -->
         <div class="mode-panel" id="mode-direct">
           <label>食物名称
             <input type="text" id="d_name" placeholder="如：苹果" />
@@ -95,7 +93,6 @@
           <button class="primary-btn" id="addDirectBtn">添加</button>
         </div>
 
-        <!-- 模式2: 按量计算 -->
         <div class="mode-panel hidden" id="mode-quantity">
           <label>食物名称
             <input type="text" id="q_name" placeholder="如：牛肉" />
@@ -161,29 +158,14 @@
       </div>
 
       <div class="card">
-        <h3>当前用户</h3>
-        <p class="muted">默认按访问地区自动识别 (AU → CJ，CN → Katrina)。识别错了或想换人用就用下面按钮。</p>
+        <h3>当前账号</h3>
         <div class="user-name-line" id="settingsUserName">--</div>
-        <div class="btn-row">
-          <button class="secondary-btn" id="redetectBtn">重新按 IP 检测</button>
-          <button class="secondary-btn" id="changeUserBtn">手动切换</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>云同步 <span id="syncBadge" class="sync-badge">未启用</span></h3>
-        <p class="muted">Token 和 Gist ID 在源码里配置，不在网页输入。改动会自动推送到 GitHub Gist，两台设备共享数据。</p>
-        <button class="secondary-btn" id="syncNowBtn">立即同步</button>
-      </div>
-
-      <div class="card danger">
-        <h3>清除当前用户数据</h3>
-        <p class="muted">将删除当前用户的所有记录与历史，无法恢复。</p>
-        <button class="danger-btn" id="clearDataBtn">清除数据</button>
+        <button class="secondary-btn" id="settingsLogoutBtn">登出</button>
       </div>
     </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
