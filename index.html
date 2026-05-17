@@ -162,37 +162,18 @@
 
       <div class="card">
         <h3>当前用户</h3>
-        <p class="muted">数据按用户独立存储，不会互相干扰。</p>
-        <div class="user-line">
-          <span id="settingsUserName">--</span>
-          <button class="secondary-btn" id="changeUserBtn">切换</button>
+        <p class="muted">默认按访问地区自动识别 (AU → CJ，CN → Katrina)。识别错了或想换人用就用下面按钮。</p>
+        <div class="user-name-line" id="settingsUserName">--</div>
+        <div class="btn-row">
+          <button class="secondary-btn" id="redetectBtn">重新按 IP 检测</button>
+          <button class="secondary-btn" id="changeUserBtn">手动切换</button>
         </div>
       </div>
 
       <div class="card">
         <h3>云同步 <span id="syncBadge" class="sync-badge">未启用</span></h3>
-        <p class="muted">填入 GitHub Token 和 Gist ID 后，两台设备间会自动同步。不填则只在本地存储。</p>
-        <label>GitHub Personal Access Token
-          <input type="password" id="syncTokenInput" placeholder="ghp_... 或 github_pat_..." autocomplete="off" />
-        </label>
-        <label>Gist ID
-          <input type="text" id="syncGistInput" placeholder="留空将自动创建一个私有 gist" autocomplete="off" />
-        </label>
-        <div class="btn-row">
-          <button class="primary-btn" id="saveSyncBtn">保存并同步</button>
-          <button class="secondary-btn" id="syncNowBtn">立即同步</button>
-        </div>
-        <details class="help-details">
-          <summary>如何获取 Token？</summary>
-          <ol>
-            <li>登录 GitHub → 右上头像 → <b>Settings</b></li>
-            <li>左侧最下 → <b>Developer settings</b> → <b>Personal access tokens</b> → <b>Tokens (classic)</b></li>
-            <li><b>Generate new token (classic)</b>，名字随便填，过期时间建议 <b>No expiration</b></li>
-            <li>权限只勾 <b>gist</b> 这一个</li>
-            <li>生成后复制 token（只显示一次），粘到上面输入框</li>
-            <li>Gist ID 第一次留空，保存后会自动创建并把 ID 填回到框里；在另一台设备配置时，把同样的 Token 和 Gist ID 填进去就能同步</li>
-          </ol>
-        </details>
+        <p class="muted">Token 和 Gist ID 在源码里配置，不在网页输入。改动会自动推送到 GitHub Gist，两台设备共享数据。</p>
+        <button class="secondary-btn" id="syncNowBtn">立即同步</button>
       </div>
 
       <div class="card danger">

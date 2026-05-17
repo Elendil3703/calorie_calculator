@@ -1,6 +1,15 @@
 (function () {
   'use strict';
 
+  // ====================================================================
+  //  云同步配置 — 把下面两个值填好后 push 就启用同步
+  //  Token: GitHub Personal Access Token，只勾 gist 权限
+  //  Gist ID: 一个 gist 的 ID（URL 最后那串），里面准备好 CJ.json / Katrina.json
+  // ====================================================================
+  const EMBEDDED_TOKEN = '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';
+  const EMBEDDED_GIST_ID = '7d0f8f9a4eb3e228b9e25df5d08dee30';
+  // ====================================================================
+
   // ---------- Constants ----------
   const USERS = {
     CJ: { name: 'CJ', region: '澳大利亚', countries: ['AU'] },
@@ -10,8 +19,6 @@
   const KJ_TO_KCAL = 1 / 4.184;
   const STORAGE_PREFIX = 'calorie_calc_v1_';
   const CURRENT_USER_KEY = 'calorie_calc_v1_current_user';
-  const SYNC_TOKEN_KEY = 'calorie_calc_v1_sync_token';
-  const SYNC_GIST_KEY = 'calorie_calc_v1_sync_gist';
   const PUSH_DEBOUNCE_MS = 3000;
 
   // ---------- State ----------
@@ -122,8 +129,8 @@
   // ---------- Cloud sync (GitHub Gist) ----------
   function getSyncConfig() {
     return {
-      token: (localStorage.getItem(SYNC_TOKEN_KEY) || '').trim(),
-      gistId: (localStorage.getItem(SYNC_GIST_KEY) || '').trim(),
+      token: (EMBEDDED_TOKEN || '').trim(),
+      gistId: (EMBEDDED_GIST_ID || '').trim(),
     };
   }
   function setSyncBadge(state, msg) {
@@ -178,7 +185,7 @@
   }
   async function pushToGist() {
     const { token, gistId } = getSyncConfig();
-    if (!token || !currentUser) return;
+    if (!token || !gistId || !currentUser) return;
     pushInFlight = true;
     setSyncBadge('syncing', '上传中…');
     try {
@@ -186,17 +193,7 @@
       const body = {
         files: { [filename]: { content: JSON.stringify(data) } },
       };
-      let result;
-      if (gistId) {
-        result = await gistRequest('PATCH', `/gists/${gistId}`, body);
-      } else {
-        body.description = 'Calorie Calculator sync';
-        body.public = false;
-        result = await gistRequest('POST', '/gists', body);
-        localStorage.setItem(SYNC_GIST_KEY, result.id);
-        const inp = $('#syncGistInput');
-        if (inp) inp.value = result.id;
-      }
+      await gistRequest('PATCH', `/gists/${gistId}`, body);
       setSyncBadge('ok', '已同步');
     } catch (e) {
       console.warn('push failed', e);
@@ -217,7 +214,7 @@
   }
   async function tryPullThenMaybePush() {
     const { token, gistId } = getSyncConfig();
-    if (!token) {
+    if (!token || !gistId) {
       setSyncBadge('idle', '未启用');
       return;
     }
@@ -226,10 +223,6 @@
     if (pushTimer) { clearTimeout(pushTimer); pushTimer = null; }
     setSyncBadge('syncing', '同步中…');
     try {
-      if (!gistId) {
-        await pushToGist();
-        return;
-      }
       const remote = await pullFromGist();
       const localTime = data.updatedAt ? new Date(data.updatedAt).getTime() : 0;
       const remoteTime = remote && remote.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
@@ -303,18 +296,19 @@
       setCurrentUser(stored);
       return;
     }
-    showUserPicker('正在识别您的位置…', null);
+    await detectAndApplyUserOrPick();
+  }
+  async function detectAndApplyUserOrPick() {
     const { user, code } = await detectUserByIP();
     if (user) {
-      $('#pickerHint').textContent = `已识别地区：${code}。点击确认或重新选择。`;
-      $$('#userPickerOverlay .user-btn').forEach(btn => {
-        btn.classList.toggle('recommended', btn.dataset.user === user);
-      });
-    } else {
-      $('#pickerHint').textContent = code
-        ? `识别地区为 ${code}，请手动选择用户。`
-        : '无法识别位置，请手动选择用户。';
+      hideUserPicker();
+      setCurrentUser(user);
+      return;
     }
+    showUserPicker(
+      code ? `识别地区为 ${code}，请手动选择用户。` : '无法识别位置，请手动选择用户。',
+      null
+    );
   }
 
   // ---------- Adding entries ----------
@@ -547,9 +541,7 @@
   function renderSettings() {
     $('#thresholdInput').value = data.threshold || DEFAULT_THRESHOLD;
     const { token, gistId } = getSyncConfig();
-    $('#syncTokenInput').value = token;
-    $('#syncGistInput').value = gistId;
-    if (!token) setSyncBadge('idle', '未启用');
+    if (!token || !gistId) setSyncBadge('idle', '未启用');
   }
 
   // ---------- Event wiring ----------
@@ -626,28 +618,14 @@
       renderAll();
       alert('已清除');
     });
-    // Sync: save token + gist id
-    $('#saveSyncBtn').addEventListener('click', async () => {
-      const token = $('#syncTokenInput').value.trim();
-      const gistId = $('#syncGistInput').value.trim();
-      if (!token) {
-        localStorage.removeItem(SYNC_TOKEN_KEY);
-        localStorage.removeItem(SYNC_GIST_KEY);
-        setSyncBadge('idle', '未启用');
-        alert('已关闭云同步（仅本地存储）');
-        return;
-      }
-      localStorage.setItem(SYNC_TOKEN_KEY, token);
-      if (gistId) localStorage.setItem(SYNC_GIST_KEY, gistId);
-      else localStorage.removeItem(SYNC_GIST_KEY);
-      await tryPullThenMaybePush();
-      // Refresh inputs (gist id may have been filled by auto-create)
-      const cfg = getSyncConfig();
-      $('#syncGistInput').value = cfg.gistId;
-    });
     // Sync: manual sync now
     $('#syncNowBtn').addEventListener('click', () => {
       tryPullThenMaybePush();
+    });
+    // Re-detect user by IP
+    $('#redetectBtn').addEventListener('click', async () => {
+      localStorage.removeItem(CURRENT_USER_KEY);
+      await detectAndApplyUserOrPick();
     });
     // Re-check rollover and sync when tab regains focus
     document.addEventListener('visibilitychange', () => {

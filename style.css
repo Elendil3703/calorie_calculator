@@ -411,9 +411,15 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .sync-badge.syncing { background: #eff6ff; color: #1e40af; }
 .sync-badge.error { background: #fef2f2; color: #991b1b; }
 
-.btn-row { display: flex; gap: 8px; margin-top: 6px; }
+.btn-row { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
 .btn-row .primary-btn { flex: 1; }
-.btn-row .secondary-btn { flex-shrink: 0; }
+.btn-row .secondary-btn { flex: 1; }
+
+.user-name-line {
+  font-weight: 600;
+  font-size: 16px;
+  padding: 8px 0 12px;
+}
 
 .help-details {
   margin-top: 12px;
