@@ -324,10 +324,9 @@
 
   // ---------- Form handlers ----------
   async function handleAddDirect() {
-    const name = $('#d_name').value.trim();
+    const name = $('#d_name').value.trim() || '未命名';
     const amount = parseFloat($('#d_amount').value);
     const unit = $('#d_unit').value;
-    if (!name) { alert('请输入食物名称'); return; }
     if (!isFinite(amount) || amount <= 0) { alert('请输入有效数值'); return; }
     const kcal = unit === 'kj' ? amount * KJ_TO_KCAL : amount;
     const detail = unit === 'kj' ? `${round1(amount)} kJ` : `${round1(amount)} 大卡`;
@@ -344,11 +343,10 @@
     }
   }
   async function handleAddQuantity() {
-    const name = $('#q_name').value.trim();
+    const name = $('#q_name').value.trim() || '未命名';
     const amount = parseFloat($('#q_amount').value);
     const unit = $('#q_unit').value;
     const per100 = parseFloat($('#q_per100').value);
-    if (!name) { alert('请输入食物名称'); return; }
     if (!isFinite(amount) || amount <= 0) { alert('请输入有效摄入量'); return; }
     if (!isFinite(per100) || per100 < 0) { alert('请输入每 100 单位的卡路里'); return; }
     const kcal = (amount / 100) * per100;

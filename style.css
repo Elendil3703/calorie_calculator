@@ -26,6 +26,7 @@ html, body {
 
 .hidden { display: none !important; }
 .muted { color: var(--muted); font-size: 13px; margin: 4px 0; }
+.optional { color: var(--muted); font-weight: 400; font-size: 12px; }
 
 /* Header */
 .app-header {
