@@ -455,7 +455,6 @@
     const overCount = series.filter(s => s.total > target).length;
     $('#statsSummary').innerHTML = `
       <div class="item"><div class="num">${round1(avg)}</div><div class="lab">日均 (有记录)</div></div>
-      <div class="item"><div class="num">${round1(sum)}</div><div class="lab">总计</div></div>
       <div class="item"><div class="num">${overCount}</div><div class="lab">超额天数</div></div>
     `;
 
