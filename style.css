@@ -180,6 +180,33 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; padding-bottom: 40px; }
 .breakdown li.total .bd-label { color: var(--primary); font-weight: 600; }
 .breakdown li.total .bd-val { color: var(--primary); font-size: 18px; }
 
+/* Inline-editable breakdown value (e.g. today's exercise) */
+.breakdown .bd-editable { display: inline-flex; align-items: baseline; }
+.breakdown .bd-editable input {
+  width: 5.5em;
+  margin: 0;
+  padding: 4px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: #fff8f1;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 14px;
+  text-align: right;
+  font-family: inherit;
+}
+.breakdown .bd-editable input:focus {
+  outline: none;
+  border-style: solid;
+  border-color: var(--accent);
+  background: #fff;
+}
+.breakdown .bd-editable input::-webkit-outer-spin-button,
+.breakdown .bd-editable input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.breakdown .bd-editable input[type="number"] { -moz-appearance: textfield; }
+
+.hint-line { margin: 10px 0 0; font-size: 12px; }
+
 /* Mode switch */
 .mode-switch {
   display: flex;

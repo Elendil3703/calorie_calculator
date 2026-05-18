@@ -15,9 +15,10 @@
     cj:      { name: 'CJ',      region: '澳大利亚', email: 'juntaochen718@foxmail.com' },
     katrina: { name: 'Katrina', region: '中国',     email: '1huangkat@hdsb.ca' },
   };
-  // 写死的身体数据 / 每日基础支出 / 计划运动量。BMR 使用 Mifflin-St Jeor 公式。
+  // 写死的身体数据 / 每日基础支出 / 计划运动量（默认值）。
+  // CJ 的 BMR 1900 来自手表实测；Katrina 1358 由 Mifflin-St Jeor 公式算得。
   const USER_PROFILES = {
-    cj:      { gender: '男', age: 22, height: 176, weight: 79, bmr: 1785, exercise: 800 },
+    cj:      { gender: '男', age: 22, height: 176, weight: 79, bmr: 1900, exercise: 800 },
     katrina: { gender: '女', age: 25, height: 167, weight: 60, bmr: 1358, exercise: 200 },
   };
   const EMAIL_TO_USER = {};
@@ -26,8 +27,10 @@
   const DEFAULT_DEFICIT = 500;
   // settings.threshold 列被复用为「热量缺口」；老数据通常是 1500+ 的摄入阈值，遇到就回退默认值。
   const MAX_PLAUSIBLE_DEFICIT = 1500;
+  const MAX_PLAUSIBLE_EXERCISE = 3000;
   const KJ_TO_KCAL = 1 / 4.184;
   const LAST_LOGIN_KEY = 'calorie_calc_last_login_user';
+  const EXERCISE_KEY_PREFIX = 'calorie_calc_exercise_';
 
   // ---------- State ----------
   let sb = null;
@@ -36,6 +39,7 @@
   let userKey = null;
   let profile = null;
   let deficit = DEFAULT_DEFICIT;
+  let dailyExercise = 0;
   let todayEntries = [];
   let historyData = {};
   let statsRange = 'week';
@@ -45,7 +49,24 @@
 
   function targetIntake() {
     if (!profile) return 0;
-    return profile.bmr + profile.exercise - deficit;
+    return profile.bmr + dailyExercise - deficit;
+  }
+  function exerciseStorageKey(date) {
+    return `${EXERCISE_KEY_PREFIX}${userKey}_${date}`;
+  }
+  function loadDailyExercise(date) {
+    if (!profile) return 0;
+    const raw = localStorage.getItem(exerciseStorageKey(date));
+    if (raw == null) return profile.exercise;
+    const v = Number(raw);
+    return (isFinite(v) && v >= 0 && v <= MAX_PLAUSIBLE_EXERCISE) ? v : profile.exercise;
+  }
+  function saveDailyExercise(date, value) {
+    if (value === profile.exercise) {
+      localStorage.removeItem(exerciseStorageKey(date));
+    } else {
+      localStorage.setItem(exerciseStorageKey(date), String(value));
+    }
   }
 
   // ---------- Utils ----------
@@ -113,6 +134,7 @@
   // ---------- Data ----------
   async function loadAll() {
     currentDate = todayStr();
+    dailyExercise = loadDailyExercise(currentDate);
     const userId = session.user.id;
 
     const { data: settings, error: e1 } = await sb
@@ -215,7 +237,8 @@
 
     if (profile) {
       $('#bdBmr').textContent = round1(profile.bmr);
-      $('#bdExercise').textContent = round1(profile.exercise);
+      const exInput = $('#bdExerciseInput');
+      if (document.activeElement !== exInput) exInput.value = round1(dailyExercise);
       $('#bdDeficit').textContent = round1(deficit);
       $('#bdTarget').textContent = round1(target);
     }
@@ -349,7 +372,11 @@
     $('#deficitInput').value = round1(deficit);
     if (profile) {
       $('#settingsBmr').textContent = round1(profile.bmr);
-      $('#settingsExercise').textContent = round1(profile.exercise);
+      const exLabel = round1(profile.exercise);
+      const exNow = round1(dailyExercise);
+      $('#settingsExercise').textContent = exNow === exLabel
+        ? exLabel
+        : `${exNow}（默认 ${exLabel}）`;
       $('#settingsDeficit').textContent = round1(deficit);
       $('#settingsTarget').textContent = round1(targetIntake());
       $('#settingsBodyInfo').textContent =
@@ -454,6 +481,34 @@
       $('#' + id).addEventListener('input', updateQuantityPreview);
       $('#' + id).addEventListener('change', updateQuantityPreview);
     });
+    const bdEx = $('#bdExerciseInput');
+    bdEx.addEventListener('input', () => {
+      const v = parseFloat(bdEx.value);
+      if (!isFinite(v) || v < 0) return;
+      if (v > MAX_PLAUSIBLE_EXERCISE) return;
+      dailyExercise = round1(v);
+      saveDailyExercise(currentDate, dailyExercise);
+      $('#bdTarget').textContent = round1(targetIntake());
+      // 重算 summary + 进度条但不刷新输入框（用户正在打字）
+      const total = entriesTotal(todayEntries);
+      const target = targetIntake();
+      const remaining = target - total;
+      $('#remaining').textContent = round1(remaining);
+      const pct = target > 0 ? Math.min(100, (total / target) * 100) : 0;
+      $('#progressBar').style.width = pct + '%';
+      $('#progressText').textContent = `${round1(total)} / ${round1(target)} 大卡`;
+      const over = total > target;
+      $('#progressBar').classList.toggle('over', over);
+      document.querySelector('.summary-card').classList.toggle('over', over);
+    });
+    bdEx.addEventListener('blur', () => {
+      if (bdEx.value === '' || !isFinite(parseFloat(bdEx.value))) {
+        dailyExercise = profile ? profile.exercise : 0;
+        saveDailyExercise(currentDate, dailyExercise);
+        renderToday();
+      }
+    });
+
     $('#saveDeficitBtn').addEventListener('click', async () => {
       const v = parseFloat($('#deficitInput').value);
       if (!isFinite(v) || v < 0) { alert('请输入有效数值'); return; }
