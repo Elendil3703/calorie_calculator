@@ -30,7 +30,8 @@
   const MAX_PLAUSIBLE_EXERCISE = 3000;
   const KJ_TO_KCAL = 1 / 4.184;
   const LAST_LOGIN_KEY = 'calorie_calc_last_login_user';
-  const EXERCISE_KEY_PREFIX = 'calorie_calc_exercise_';
+  // 用户改运动量时，每按一下键都打一次库太浪费——攒 600ms 没新输入再写。
+  const EXERCISE_SAVE_DEBOUNCE_MS = 600;
 
   // ---------- State ----------
   let sb = null;
@@ -47,30 +48,98 @@
   let midnightTimer = null;
   let currentDate = null;
   let aiEstimate = null;
+  let exerciseSaveTimer = null;
 
   function targetIntake() {
     if (!profile) return 0;
     return profile.bmr + dailyExercise - deficit;
   }
-  function exerciseStorageKey(date) {
-    return `${EXERCISE_KEY_PREFIX}${userKey}_${date}`;
+  // 每日运动量：以 daily_exercise 表为唯一真相。
+  //   - 当天没行 → 用 profile.exercise 默认值（也就是次日"自动回默认"的来源）
+  //   - 当天有行 → 用那个值（跨设备/浏览器一致）
+  // 错误一律吞掉走默认值，避免表还没建好时整个 loadAll 挂掉。
+  async function fetchDailyExerciseFromDb(date) {
+    if (!profile || !session) return null;
+    try {
+      const { data, error } = await withTimeout(
+        sb.from('daily_exercise')
+          .select('kcal')
+          .eq('user_id', session.user.id)
+          .eq('date', date)
+          .maybeSingle(),
+        6000,
+        'fetchDailyExercise'
+      );
+      if (error) throw error;
+      if (!data) return null;
+      const v = Number(data.kcal);
+      return (isFinite(v) && v >= 0 && v <= MAX_PLAUSIBLE_EXERCISE) ? v : null;
+    } catch (e) {
+      console.warn('[fetchDailyExercise] failed (falling back to default):', e);
+      return null;
+    }
   }
-  function loadDailyExercise(date) {
-    if (!profile) return 0;
-    const raw = localStorage.getItem(exerciseStorageKey(date));
-    if (raw == null) return profile.exercise;
-    const v = Number(raw);
-    return (isFinite(v) && v >= 0 && v <= MAX_PLAUSIBLE_EXERCISE) ? v : profile.exercise;
+  async function saveDailyExerciseToDb(date, value) {
+    if (!session) return;
+    try {
+      const { error } = await withTimeout(
+        sb.from('daily_exercise').upsert({
+          user_id: session.user.id,
+          date,
+          kcal: value,
+          updated_at: new Date().toISOString(),
+        }),
+        6000,
+        'saveDailyExercise'
+      );
+      if (error) throw error;
+    } catch (e) {
+      console.warn('[saveDailyExercise] failed:', e);
+      if (isAuthError(e)) { await forceReauth('会话已过期，请重新登录'); }
+    }
   }
-  function saveDailyExercise(date, value) {
-    if (value === profile.exercise) {
-      localStorage.removeItem(exerciseStorageKey(date));
-    } else {
-      localStorage.setItem(exerciseStorageKey(date), String(value));
+  async function clearDailyExerciseInDb(date) {
+    if (!session) return;
+    try {
+      const { error } = await withTimeout(
+        sb.from('daily_exercise').delete()
+          .eq('user_id', session.user.id)
+          .eq('date', date),
+        6000,
+        'clearDailyExercise'
+      );
+      if (error) throw error;
+    } catch (e) {
+      console.warn('[clearDailyExercise] failed:', e);
+      if (isAuthError(e)) { await forceReauth('会话已过期，请重新登录'); }
+    }
+  }
+  // 把还在防抖窗口里的待写值立刻冲到库里。失焦/关闭/切走时用。
+  function flushPendingExerciseSave() {
+    if (exerciseSaveTimer) {
+      clearTimeout(exerciseSaveTimer);
+      exerciseSaveTimer = null;
+      saveDailyExerciseToDb(currentDate, dailyExercise);
     }
   }
 
   // ---------- Utils ----------
+  // 给可能 hang 住的 await 加超时兜底。
+  // 历史问题：关闭窗口时 supabase 的 refresh-token rotation 可能写一半，
+  // 重开后 getSession() 内部 refresh 会永远 await（fetch 卡在网络层、
+  // 或 navigator.locks 被节流的旧 tab 持有），UI 永远停在 login overlay。
+  // 套个 timeout，超时按"会话坏了"处理即可。
+  function withTimeout(promise, ms, label) {
+    let timer;
+    const timeout = new Promise((_, rej) => {
+      timer = setTimeout(() => {
+        const e = new Error(`${label} 超时（${ms}ms）`);
+        e.__timeout = true;
+        rej(e);
+      }, ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  }
   function todayStr() {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -191,34 +260,35 @@
   // ---------- Data ----------
   async function loadAll() {
     currentDate = todayStr();
-    dailyExercise = loadDailyExercise(currentDate);
     const userId = session.user.id;
+    const exFromDb = await fetchDailyExerciseFromDb(currentDate);
+    dailyExercise = exFromDb != null ? exFromDb : (profile ? profile.exercise : 0);
 
-    const { data: settings, error: e1 } = await sb
-      .from('settings')
-      .select('threshold')
-      .eq('user_id', userId)
-      .maybeSingle();
+    const { data: settings, error: e1 } = await withTimeout(
+      sb.from('settings').select('threshold').eq('user_id', userId).maybeSingle(),
+      8000,
+      'loadAll/settings'
+    );
     if (e1) throw e1;
     const stored = settings != null ? Number(settings.threshold) : null;
     deficit = (stored != null && isFinite(stored) && stored >= 0 && stored <= MAX_PLAUSIBLE_DEFICIT)
       ? stored
       : DEFAULT_DEFICIT;
 
-    const { data: entries, error: e2 } = await sb
-      .from('entries')
-      .select('*')
-      .eq('date', currentDate)
-      .order('created_at', { ascending: false });
+    const { data: entries, error: e2 } = await withTimeout(
+      sb.from('entries').select('*').eq('date', currentDate).order('created_at', { ascending: false }),
+      8000,
+      'loadAll/entries'
+    );
     if (e2) throw e2;
     todayEntries = entries || [];
 
     const startStr = daysAgoStr(30);
-    const { data: hist, error: e3 } = await sb
-      .from('entries')
-      .select('date, calories')
-      .gte('date', startStr)
-      .lt('date', currentDate);
+    const { data: hist, error: e3 } = await withTimeout(
+      sb.from('entries').select('date, calories').gte('date', startStr).lt('date', currentDate),
+      8000,
+      'loadAll/history'
+    );
     if (e3) throw e3;
     historyData = {};
     for (const row of (hist || [])) {
@@ -604,6 +674,12 @@
       e.preventDefault();
       handleLogin();
     });
+    // 密码只允许数字。手机靠 inputmode=numeric 直接出数字键盘，
+    // 桌面用户还能从硬键盘敲字母，这里 JS 兜底把非数字字符剔掉。
+    $('#loginPassword').addEventListener('input', (e) => {
+      const cleaned = e.target.value.replace(/\D/g, '');
+      if (cleaned !== e.target.value) e.target.value = cleaned;
+    });
     $('#logoutBtn').addEventListener('click', handleLogout);
     $('#settingsLogoutBtn').addEventListener('click', handleLogout);
 
@@ -655,7 +731,15 @@
       if (!isFinite(v) || v < 0) return;
       if (v > MAX_PLAUSIBLE_EXERCISE) return;
       dailyExercise = round1(v);
-      saveDailyExercise(currentDate, dailyExercise);
+      // 防抖写库：每次按键改 in-memory + 进度条；攒够 EXERCISE_SAVE_DEBOUNCE_MS
+      // 没新输入再 upsert，避免一串数字打出 5 次 PATCH。
+      if (exerciseSaveTimer) clearTimeout(exerciseSaveTimer);
+      const dateAtEdit = currentDate;
+      const valueAtEdit = dailyExercise;
+      exerciseSaveTimer = setTimeout(() => {
+        exerciseSaveTimer = null;
+        saveDailyExerciseToDb(dateAtEdit, valueAtEdit);
+      }, EXERCISE_SAVE_DEBOUNCE_MS);
       $('#bdTarget').textContent = round1(targetIntake());
       // 重算 summary + 进度条但不刷新输入框（用户正在打字）
       const total = entriesTotal(todayEntries);
@@ -671,9 +755,14 @@
     });
     bdEx.addEventListener('blur', () => {
       if (bdEx.value === '' || !isFinite(parseFloat(bdEx.value))) {
+        // 用户清空 = 回到默认；删掉今天的 override 行（没行 = 用 profile.exercise）。
+        if (exerciseSaveTimer) { clearTimeout(exerciseSaveTimer); exerciseSaveTimer = null; }
         dailyExercise = profile ? profile.exercise : 0;
-        saveDailyExercise(currentDate, dailyExercise);
+        clearDailyExerciseInDb(currentDate);
         renderToday();
+      } else {
+        // 失焦时把还在防抖窗口里的值立刻冲到库里，别等用户切走丢数据。
+        flushPendingExerciseSave();
       }
     });
 
@@ -696,8 +785,13 @@
         await loadAll();
         renderAll();
       } catch (e) {
-        if (isAuthError(e)) { await forceReauth('会话已过期，请重新登录'); return; }
-        console.warn(e);
+        // 切回前台再 loadAll 超时，多半是 token 在后台被 rotate 出问题
+        // 或者锁被节流挂住了，按会话失效处理一次性清干净。
+        if (isAuthError(e) || e.__timeout) {
+          await forceReauth('会话异常已重置，请重新登录');
+          return;
+        }
+        console.warn('[visibilitychange] loadAll failed:', e);
       }
     });
   }
@@ -714,8 +808,13 @@
       renderAll();
       scheduleMidnight();
     } catch (e) {
-      console.warn(e);
-      if (isAuthError(e)) { await forceReauth('会话已过期，请重新登录'); return; }
+      console.warn('[afterAuth] loadAll failed:', e);
+      // 超时几乎一定意味着 token 坏了（refresh 卡死之类），按会话失效处理
+      // 而不是弹 alert 让用户卡在 overlay 上无法操作。
+      if (isAuthError(e) || e.__timeout) {
+        await forceReauth('会话异常已重置，请重新登录');
+        return;
+      }
       alert('加载数据失败：' + (e.message || e));
     }
   }
@@ -761,14 +860,17 @@
       }
     });
 
-    // getSession 可能因 localStorage 里残留的坏 token 而抛错。
-    // 一旦抛错就清干净 sb-* 键并回到登录页，否则用户会卡死在加载状态。
+    // getSession 可能因 localStorage 里残留的坏 token 而抛错，
+    // 也可能因为内部 refresh 卡死（fetch hang / navigator.locks 节流）而
+    // 永远不返回——后者就是"关闭窗口重开后一直加载中"的根因。
+    // 抛错 → 清 sb-* 重登；超时 → 同样按"会话坏了"处理。
     let existing = null;
     try {
-      const r = await sb.auth.getSession();
+      const r = await withTimeout(sb.auth.getSession(), 6000, 'init/getSession');
       existing = r && r.data ? r.data.session : null;
     } catch (e) {
-      await forceReauth('会话已重置，请重新登录');
+      console.warn('[init] getSession failed:', e);
+      await forceReauth(e.__timeout ? '会话异常已重置，请重新登录' : '会话已重置，请重新登录');
       return;
     }
     if (existing) {

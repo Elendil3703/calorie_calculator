@@ -29,3 +29,18 @@ create policy "settings_own" on public.settings
 
 create policy "entries_own" on public.entries
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- 每日运动量覆盖。没有行 = 当天用 USER_PROFILES 里的默认值，
+-- 所以隔天自动"回到默认"是数据模型本身的语义，不用任何 cron。
+create table public.daily_exercise (
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  date       date not null,
+  kcal       numeric not null,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, date)
+);
+
+alter table public.daily_exercise enable row level security;
+
+create policy "daily_exercise_own" on public.daily_exercise
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);

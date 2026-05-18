@@ -20,7 +20,7 @@
           </select>
         </label>
         <label>密码
-          <input type="password" id="loginPassword" name="password" placeholder="密码" autocomplete="current-password" />
+          <input type="password" id="loginPassword" name="password" placeholder="密码" autocomplete="current-password" inputmode="numeric" pattern="[0-9]*" />
         </label>
         <button class="primary-btn" id="loginBtn" type="submit">登录</button>
         <p class="error-text" id="loginError"></p>
@@ -221,6 +221,6 @@
        GH Pages 不发严格的 Cache-Control，浏览器会用启发式缓存策略，
        第二次打开常常直接读磁盘里的老 app.js，让线上 fix 看起来"没生效"。
        每次 app.js 有实质性改动就把版本号往上推一档。 -->
-  <script src="app.js?v=20260518a"></script>
+  <script src="app.js?v=20260519b"></script>
 </body>
 </html>
