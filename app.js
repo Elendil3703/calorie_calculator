@@ -95,6 +95,32 @@
   function $$(sel) { return document.querySelectorAll(sel); }
 
   // ---------- Auth ----------
+  // Supabase 默认的 lock 实现会用 navigator.locks 阻塞式等另一个标签释放锁。
+  // 如果有标签崩了 / 被浏览器后台节流 / OneDrive 同步把页面卡住，那把锁永远不释放，
+  // 新登录请求 200 回来之后写不进 storage，SIGNED_IN 事件不发，UI 不跳转。
+  // 这里用 ifAvailable 轮询 + 3 秒强制放行兜底（应用是单用户、写入是 session token，
+  // 极小概率 last-write-wins 完全可接受）。
+  async function authLock(name, acquireTimeout, fn) {
+    if (typeof navigator === 'undefined' || !navigator.locks || !navigator.locks.request) {
+      return await fn();
+    }
+    const tryOnce = () => navigator.locks.request(
+      name,
+      { mode: 'exclusive', ifAvailable: true },
+      async (lock) => lock ? { ok: true, value: await fn() } : { ok: false }
+    );
+    const budget = Math.max(500, Math.min(acquireTimeout || 3000, 3000));
+    const start = Date.now();
+    while (true) {
+      const r = await tryOnce();
+      if (r.ok) return r.value;
+      if (Date.now() - start >= budget) {
+        console.warn('[authLock] timeout, proceeding without lock:', name);
+        return await fn();
+      }
+      await new Promise(res => setTimeout(res, 80));
+    }
+  }
   // 识别 Supabase 抛出的「会话失效」类错误。出现这些时必须强制重新登录，
   // 否则 localStorage 里的坏 token 会一直发给后端，所有请求都 401，
   // 用户只能开无痕窗口（参见之前那个「后端连不上」的 bug）。
@@ -705,7 +731,14 @@
       return;
     }
     sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: { persistSession: true, autoRefreshToken: true }
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        // 默认 lock 跨标签共享 navigator.locks，另一个标签崩/被节流时会
+        // 把锁挂死，新登录就会停在 200 之后写不进 storage，UI 不跳转。
+        // 这里改成 ifAvailable 轮询 + 3 秒后强制放行（last-write-wins 兜底）。
+        lock: authLock,
+      }
     });
     setupEvents();
 
