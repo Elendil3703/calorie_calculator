@@ -66,6 +66,16 @@
         <div class="progress-text" id="progressText">0 / 0 大卡</div>
       </div>
 
+      <div class="card breakdown-card">
+        <h3>今日饮食目标</h3>
+        <ul class="breakdown">
+          <li><span class="bd-label">基础代谢</span><span class="bd-val" id="bdBmr">--</span></li>
+          <li class="add"><span class="bd-label">＋ 计划运动</span><span class="bd-val" id="bdExercise">--</span></li>
+          <li class="sub"><span class="bd-label">− 热量缺口</span><span class="bd-val" id="bdDeficit">--</span></li>
+          <li class="total"><span class="bd-label">＝ 饮食目标</span><span class="bd-val" id="bdTarget">--</span></li>
+        </ul>
+      </div>
+
       <div id="lastEntryToast" class="last-entry hidden"></div>
 
       <div class="card">
@@ -77,11 +87,11 @@
 
         <div class="mode-panel" id="mode-direct">
           <label>食物名称 <span class="optional">（选填）</span>
-            <input type="text" id="d_name" placeholder="如：苹果（可留空）" />
+            <input type="text" id="d_name" placeholder="如：苹果" />
           </label>
           <div class="row">
             <label class="flex">数值
-              <input type="number" id="d_amount" placeholder="例如 250" inputmode="decimal" />
+              <input type="number" id="d_amount" inputmode="decimal" />
             </label>
             <label>单位
               <select id="d_unit">
@@ -95,11 +105,11 @@
 
         <div class="mode-panel hidden" id="mode-quantity">
           <label>食物名称 <span class="optional">（选填）</span>
-            <input type="text" id="q_name" placeholder="如：牛肉（可留空）" />
+            <input type="text" id="q_name" />
           </label>
           <div class="row">
             <label class="flex">摄入量
-              <input type="number" id="q_amount" placeholder="例如 300" inputmode="decimal" />
+              <input type="number" id="q_amount" inputmode="decimal" />
             </label>
             <label>单位
               <select id="q_unit">
@@ -110,7 +120,7 @@
           </div>
           <div class="row">
             <label class="flex">每 100 <span id="q_per_unit">克</span> 含
-              <input type="number" id="q_per100" placeholder="例如 250" inputmode="decimal" />
+              <input type="number" id="q_per100" inputmode="decimal" />
             </label>
             <span class="kcal-suffix">大卡</span>
           </div>
@@ -146,15 +156,26 @@
     <!-- 设置 -->
     <section id="tab-settings" class="tab-panel">
       <div class="card">
-        <h3>每日摄入阈值</h3>
-        <p class="muted">超过该值时进度条会提示。</p>
+        <h3>每日热量缺口</h3>
+        <p class="muted">目标每天比消耗少摄入多少大卡（用于减脂）。</p>
         <div class="row">
           <label class="flex">
-            <input type="number" id="thresholdInput" placeholder="例如 2000" inputmode="decimal" />
+            <input type="number" id="deficitInput" inputmode="decimal" />
           </label>
           <span class="kcal-suffix">大卡</span>
         </div>
-        <button class="primary-btn" id="saveThresholdBtn">保存</button>
+        <button class="primary-btn" id="saveDeficitBtn">保存</button>
+      </div>
+
+      <div class="card">
+        <h3>身体数据</h3>
+        <p class="muted" id="settingsBodyInfo">--</p>
+        <ul class="breakdown">
+          <li><span class="bd-label">基础代谢 (BMR)</span><span class="bd-val" id="settingsBmr">--</span></li>
+          <li class="add"><span class="bd-label">＋ 计划运动</span><span class="bd-val" id="settingsExercise">--</span></li>
+          <li class="sub"><span class="bd-label">− 热量缺口</span><span class="bd-val" id="settingsDeficit">--</span></li>
+          <li class="total"><span class="bd-label">＝ 饮食目标</span><span class="bd-val" id="settingsTarget">--</span></li>
+        </ul>
       </div>
 
       <div class="card">

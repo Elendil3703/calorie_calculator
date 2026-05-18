@@ -149,6 +149,37 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; padding-bottom: 40px; }
 .card h3 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
 .card.danger h3 { color: var(--danger); }
 
+/* Breakdown list (today target + settings body data) */
+.breakdown { list-style: none; padding: 0; margin: 0; }
+.breakdown li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 14px;
+}
+.breakdown li:last-child { border-bottom: none; }
+.breakdown .bd-label { color: var(--muted); }
+.breakdown .bd-val { font-weight: 600; color: var(--text); }
+.breakdown .bd-val::after {
+  content: ' 大卡';
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: 2px;
+}
+.breakdown li.add .bd-val { color: var(--accent); }
+.breakdown li.sub .bd-val { color: #2563eb; }
+.breakdown li.total {
+  border-top: 1px solid var(--border);
+  border-bottom: none;
+  margin-top: 4px;
+  padding-top: 12px;
+}
+.breakdown li.total .bd-label { color: var(--primary); font-weight: 600; }
+.breakdown li.total .bd-val { color: var(--primary); font-size: 18px; }
+
 /* Mode switch */
 .mode-switch {
   display: flex;

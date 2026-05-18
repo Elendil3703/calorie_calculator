@@ -15,9 +15,17 @@
     cj:      { name: 'CJ',      region: '澳大利亚', email: 'juntaochen718@foxmail.com' },
     katrina: { name: 'Katrina', region: '中国',     email: '1huangkat@hdsb.ca' },
   };
+  // 写死的身体数据 / 每日基础支出 / 计划运动量。BMR 使用 Mifflin-St Jeor 公式。
+  const USER_PROFILES = {
+    cj:      { gender: '男', age: 22, height: 176, weight: 79, bmr: 1785, exercise: 800 },
+    katrina: { gender: '女', age: 25, height: 167, weight: 60, bmr: 1358, exercise: 200 },
+  };
   const EMAIL_TO_USER = {};
-  for (const k in USERS) EMAIL_TO_USER[USERS[k].email] = USERS[k];
-  const DEFAULT_THRESHOLD = 2000;
+  const EMAIL_TO_KEY = {};
+  for (const k in USERS) { EMAIL_TO_USER[USERS[k].email] = USERS[k]; EMAIL_TO_KEY[USERS[k].email] = k; }
+  const DEFAULT_DEFICIT = 500;
+  // settings.threshold 列被复用为「热量缺口」；老数据通常是 1500+ 的摄入阈值，遇到就回退默认值。
+  const MAX_PLAUSIBLE_DEFICIT = 1500;
   const KJ_TO_KCAL = 1 / 4.184;
   const LAST_LOGIN_KEY = 'calorie_calc_last_login_user';
 
@@ -25,13 +33,20 @@
   let sb = null;
   let session = null;
   let userName = null;
-  let threshold = DEFAULT_THRESHOLD;
+  let userKey = null;
+  let profile = null;
+  let deficit = DEFAULT_DEFICIT;
   let todayEntries = [];
   let historyData = {};
   let statsRange = 'week';
   let inputMode = 'direct';
   let midnightTimer = null;
   let currentDate = null;
+
+  function targetIntake() {
+    if (!profile) return 0;
+    return profile.bmr + profile.exercise - deficit;
+  }
 
   // ---------- Utils ----------
   function todayStr() {
@@ -106,7 +121,10 @@
       .eq('user_id', userId)
       .maybeSingle();
     if (e1) throw e1;
-    threshold = settings ? Number(settings.threshold) : DEFAULT_THRESHOLD;
+    const stored = settings != null ? Number(settings.threshold) : null;
+    deficit = (stored != null && isFinite(stored) && stored >= 0 && stored <= MAX_PLAUSIBLE_DEFICIT)
+      ? stored
+      : DEFAULT_DEFICIT;
 
     const { data: entries, error: e2 } = await sb
       .from('entries')
@@ -143,14 +161,14 @@
     todayEntries = todayEntries.filter(e => e.id !== id);
     renderToday();
   }
-  async function saveThreshold(value) {
+  async function saveDeficit(value) {
     const { error } = await sb.from('settings').upsert({
       user_id: session.user.id,
       threshold: value,
       updated_at: new Date().toISOString(),
     });
     if (error) { alert('保存失败：' + error.message); return false; }
-    threshold = value;
+    deficit = value;
     return true;
   }
 
@@ -183,16 +201,24 @@
   }
   function renderToday() {
     $('#dateLine').textContent = formatDateLong(currentDate || todayStr());
+    const target = targetIntake();
     const total = entriesTotal(todayEntries);
-    const remaining = threshold - total;
+    const remaining = target - total;
     $('#totalToday').textContent = round1(total);
     $('#remaining').textContent = round1(remaining);
-    const pct = threshold > 0 ? Math.min(100, (total / threshold) * 100) : 0;
+    const pct = target > 0 ? Math.min(100, (total / target) * 100) : 0;
     $('#progressBar').style.width = pct + '%';
-    $('#progressText').textContent = `${round1(total)} / ${round1(threshold)} 大卡`;
-    const over = total > threshold;
+    $('#progressText').textContent = `${round1(total)} / ${round1(target)} 大卡`;
+    const over = total > target;
     $('#progressBar').classList.toggle('over', over);
     document.querySelector('.summary-card').classList.toggle('over', over);
+
+    if (profile) {
+      $('#bdBmr').textContent = round1(profile.bmr);
+      $('#bdExercise').textContent = round1(profile.exercise);
+      $('#bdDeficit').textContent = round1(deficit);
+      $('#bdTarget').textContent = round1(target);
+    }
 
     const list = $('#entryList');
     list.innerHTML = '';
@@ -236,7 +262,7 @@
   }
   function showLastEntryToast(entry) {
     const total = entriesTotal(todayEntries);
-    const remaining = threshold - total;
+    const remaining = targetIntake() - total;
     const toast = $('#lastEntryToast');
     const remText = remaining >= 0
       ? `剩余 ${round1(remaining)} 大卡。`
@@ -249,6 +275,7 @@
   }
   function renderStats() {
     const days = statsRange === 'week' ? 7 : 30;
+    const target = targetIntake();
     const todayTotal = entriesTotal(todayEntries);
     const today = todayStr();
     const series = [];
@@ -263,7 +290,7 @@
     const sum = series.reduce((a, b) => a + b.total, 0);
     const avg = nonZero.length ? sum / nonZero.length : 0;
     const max = series.reduce((a, b) => Math.max(a, b.total), 0);
-    const overCount = series.filter(s => s.total > threshold).length;
+    const overCount = series.filter(s => s.total > target).length;
     $('#statsSummary').innerHTML = `
       <div class="item"><div class="num">${round1(avg)}</div><div class="lab">日均 (有记录)</div></div>
       <div class="item"><div class="num">${round1(sum)}</div><div class="lab">总计</div></div>
@@ -272,12 +299,12 @@
 
     const chart = $('#chart');
     chart.innerHTML = '';
-    const maxScale = Math.max(max, threshold, 1) * 1.1;
+    const maxScale = Math.max(max, target, 1) * 1.1;
     for (const s of series) {
       const bar = document.createElement('div');
       bar.className = 'bar';
       if (s.total === 0) bar.classList.add('empty');
-      else if (s.total > threshold) bar.classList.add('over');
+      else if (s.total > target) bar.classList.add('over');
       bar.style.height = (s.total > 0 ? (s.total / maxScale) * 100 : 1) + '%';
       const lab = document.createElement('span');
       lab.className = 'bar-label';
@@ -310,7 +337,7 @@
         dateSpan.className = 'date';
         dateSpan.textContent = formatDateLong(s.date);
         const totalSpan = document.createElement('span');
-        totalSpan.className = 'total' + (s.total > threshold ? ' over' : '');
+        totalSpan.className = 'total' + (s.total > target ? ' over' : '');
         totalSpan.textContent = `${round1(s.total)} 大卡`;
         li.appendChild(dateSpan);
         li.appendChild(totalSpan);
@@ -319,7 +346,15 @@
     }
   }
   function renderSettings() {
-    $('#thresholdInput').value = threshold || DEFAULT_THRESHOLD;
+    $('#deficitInput').value = round1(deficit);
+    if (profile) {
+      $('#settingsBmr').textContent = round1(profile.bmr);
+      $('#settingsExercise').textContent = round1(profile.exercise);
+      $('#settingsDeficit').textContent = round1(deficit);
+      $('#settingsTarget').textContent = round1(targetIntake());
+      $('#settingsBodyInfo').textContent =
+        `${profile.gender} · ${profile.age} 岁 · ${profile.height} cm · ${profile.weight} kg`;
+    }
   }
 
   // ---------- Form handlers ----------
@@ -419,14 +454,18 @@
       $('#' + id).addEventListener('input', updateQuantityPreview);
       $('#' + id).addEventListener('change', updateQuantityPreview);
     });
-    $('#saveThresholdBtn').addEventListener('click', async () => {
-      const v = parseFloat($('#thresholdInput').value);
-      if (!isFinite(v) || v <= 0) { alert('请输入有效数值'); return; }
-      const btn = $('#saveThresholdBtn');
+    $('#saveDeficitBtn').addEventListener('click', async () => {
+      const v = parseFloat($('#deficitInput').value);
+      if (!isFinite(v) || v < 0) { alert('请输入有效数值'); return; }
+      if (v > MAX_PLAUSIBLE_DEFICIT) {
+        alert(`缺口不能超过 ${MAX_PLAUSIBLE_DEFICIT} 大卡`);
+        return;
+      }
+      const btn = $('#saveDeficitBtn');
       btn.disabled = true; const old = btn.textContent; btn.textContent = '保存中…';
-      const ok = await saveThreshold(round1(v));
+      const ok = await saveDeficit(round1(v));
       btn.disabled = false; btn.textContent = old;
-      if (ok) { renderToday(); renderStats(); alert('已保存'); }
+      if (ok) { renderToday(); renderStats(); renderSettings(); alert('已保存'); }
     });
     document.addEventListener('visibilitychange', async () => {
       if (document.hidden || !session) return;
@@ -436,8 +475,10 @@
 
   async function afterAuth() {
     const email = session.user.email;
+    userKey = EMAIL_TO_KEY[email] || null;
     const u = EMAIL_TO_USER[email];
     userName = u ? u.name : email.split('@')[0];
+    profile = userKey ? USER_PROFILES[userKey] : null;
     try {
       await loadAll();
       hideLogin();
@@ -471,6 +512,9 @@
       } else if (event === 'SIGNED_OUT') {
         session = null;
         userName = null;
+        userKey = null;
+        profile = null;
+        deficit = DEFAULT_DEFICIT;
         if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
         showLogin();
       }
