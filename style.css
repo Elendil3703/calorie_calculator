@@ -219,14 +219,43 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; padding-bottom: 40px; }
   flex: 1;
   background: transparent;
   border: none;
-  padding: 8px 0;
-  font-size: 13px;
+  padding: 8px 4px;
+  font-size: 12.5px;
   color: var(--muted);
   cursor: pointer;
   border-radius: 8px;
   transition: background 0.15s, color 0.15s;
+  font-family: inherit;
+  white-space: nowrap;
 }
 .mode-btn.active { background: var(--card); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+
+/* AI mode */
+.secondary-btn.full-width {
+  width: 100%;
+  padding: 10px;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+.secondary-btn.full-width:disabled { color: var(--muted); cursor: not-allowed; }
+.ai-result {
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.ai-result-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.ai-result-name { font-weight: 600; font-size: 15px; color: var(--text); }
+.ai-result-kcal { font-weight: 700; font-size: 18px; color: #0369a1; white-space: nowrap; }
+.ai-result-kcal span { font-size: 22px; }
+.ai-hint { margin: 6px 0 0; font-size: 12px; }
+.ai-error { text-align: left; margin: 0 0 12px; min-height: 0; }
 
 /* Form */
 label {

@@ -46,6 +46,7 @@
   let inputMode = 'direct';
   let midnightTimer = null;
   let currentDate = null;
+  let aiEstimate = null;
 
   function targetIntake() {
     if (!profile) return 0;
@@ -427,6 +428,85 @@
       showLastEntryToast(entry);
     }
   }
+  function resetAiPanel() {
+    aiEstimate = null;
+    $('#ai_result').classList.add('hidden');
+    $('#addAiBtn').classList.add('hidden');
+    $('#ai_error').classList.add('hidden');
+    $('#ai_error').textContent = '';
+  }
+  function showAiError(msg) {
+    aiEstimate = null;
+    $('#ai_result').classList.add('hidden');
+    $('#addAiBtn').classList.add('hidden');
+    const el = $('#ai_error');
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  }
+  async function handleEstimateAi() {
+    const description = $('#ai_description').value.trim();
+    if (!description) { showAiError('请输入食物描述'); return; }
+    const btn = $('#estimateBtn');
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = '估算中…';
+    $('#ai_error').classList.add('hidden');
+    try {
+      const { data, error } = await sb.functions.invoke('estimate-calories', {
+        body: { description },
+      });
+      if (error) {
+        // Edge function returned non-2xx; try to read the structured error body
+        let msg = error.message || 'AI 估算失败';
+        try {
+          const ctx = error.context;
+          if (ctx && typeof ctx.json === 'function') {
+            const body = await ctx.json();
+            if (body && body.error) msg = body.error;
+          }
+        } catch { /* ignore */ }
+        showAiError(msg);
+        return;
+      }
+      if (!data || typeof data.calories !== 'number') {
+        showAiError('AI 返回格式异常');
+        return;
+      }
+      aiEstimate = { name: data.name || description, calories: round1(data.calories) };
+      $('#ai_name').textContent = aiEstimate.name;
+      $('#ai_kcal').textContent = round1(aiEstimate.calories);
+      $('#ai_result').classList.remove('hidden');
+      $('#addAiBtn').classList.remove('hidden');
+    } catch (e) {
+      showAiError('网络异常：' + (e.message || e));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+  async function handleAddAi() {
+    if (!aiEstimate) return;
+    const btn = $('#addAiBtn');
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = '添加中…';
+    const entry = await addEntry({
+      name: aiEstimate.name,
+      calories: aiEstimate.calories,
+      mode: 'ai',
+      detail: 'AI 估算',
+    });
+    btn.disabled = false;
+    btn.textContent = old;
+    if (entry) {
+      $('#ai_description').value = '';
+      resetAiPanel();
+      $('#ai_description').focus();
+      renderToday();
+      showLastEntryToast(entry);
+    }
+  }
+
   function updateQuantityPreview() {
     const amount = parseFloat($('#q_amount').value);
     const per100 = parseFloat($('#q_per100').value);
@@ -465,6 +545,7 @@
         inputMode = b.dataset.mode;
         $('#mode-direct').classList.toggle('hidden', inputMode !== 'direct');
         $('#mode-quantity').classList.toggle('hidden', inputMode !== 'quantity');
+        $('#mode-ai').classList.toggle('hidden', inputMode !== 'ai');
       });
     });
     $$('.range-btn').forEach(b => {
@@ -480,6 +561,15 @@
     ['q_amount', 'q_per100', 'q_unit'].forEach(id => {
       $('#' + id).addEventListener('input', updateQuantityPreview);
       $('#' + id).addEventListener('change', updateQuantityPreview);
+    });
+    $('#estimateBtn').addEventListener('click', handleEstimateAi);
+    $('#addAiBtn').addEventListener('click', handleAddAi);
+    $('#ai_description').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); handleEstimateAi(); }
+    });
+    $('#ai_description').addEventListener('input', () => {
+      // 描述变了就清掉旧估算，避免误添加
+      if (aiEstimate) resetAiPanel();
     });
     const bdEx = $('#bdExerciseInput');
     bdEx.addEventListener('input', () => {

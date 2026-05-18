@@ -89,6 +89,7 @@
         <div class="mode-switch">
           <button class="mode-btn active" data-mode="direct">直接输入</button>
           <button class="mode-btn" data-mode="quantity">按重量/体积</button>
+          <button class="mode-btn" data-mode="ai">AI 估算</button>
         </div>
 
         <div class="mode-panel" id="mode-direct">
@@ -132,6 +133,22 @@
           </div>
           <div class="preview" id="q_preview">≈ 0 大卡</div>
           <button class="primary-btn" id="addQuantityBtn">添加</button>
+        </div>
+
+        <div class="mode-panel hidden" id="mode-ai">
+          <label>食物描述
+            <input type="text" id="ai_description" placeholder="如：一碗米饭、两个煎蛋、一份红烧肉" />
+          </label>
+          <button class="secondary-btn full-width" id="estimateBtn">AI 估算</button>
+          <p class="ai-error error-text hidden" id="ai_error"></p>
+          <div class="ai-result hidden" id="ai_result">
+            <div class="ai-result-row">
+              <div class="ai-result-name" id="ai_name">--</div>
+              <div class="ai-result-kcal"><span id="ai_kcal">--</span> 大卡</div>
+            </div>
+            <p class="muted ai-hint">AI 估算值，仅供参考</p>
+          </div>
+          <button class="primary-btn hidden" id="addAiBtn">添加</button>
         </div>
       </div>
 
