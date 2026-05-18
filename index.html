@@ -12,17 +12,19 @@
     <div class="overlay-card login-card">
       <h2>🍎 卡路里计算器</h2>
       <p class="muted">登录账号开始记录</p>
-      <label>用户
-        <select id="loginUser">
-          <option value="cj">🇦🇺 CJ</option>
-          <option value="katrina">🇨🇳 Katrina</option>
-        </select>
-      </label>
-      <label>密码
-        <input type="password" id="loginPassword" placeholder="密码" autocomplete="current-password" />
-      </label>
-      <button class="primary-btn" id="loginBtn">登录</button>
-      <p class="error-text" id="loginError"></p>
+      <form id="loginForm" action="#" method="post" autocomplete="on">
+        <label>用户
+          <select id="loginUser" name="username" autocomplete="username">
+            <option value="cj">🇦🇺 CJ</option>
+            <option value="katrina">🇨🇳 Katrina</option>
+          </select>
+        </label>
+        <label>密码
+          <input type="password" id="loginPassword" name="password" placeholder="密码" autocomplete="current-password" />
+        </label>
+        <button class="primary-btn" id="loginBtn" type="submit">登录</button>
+        <p class="error-text" id="loginError"></p>
+      </form>
     </div>
   </div>
 
@@ -129,7 +131,12 @@
             <label class="flex">每 100 <span id="q_per_unit">克</span> 含
               <input type="number" id="q_per100" inputmode="decimal" />
             </label>
-            <span class="kcal-suffix">大卡</span>
+            <label>单位
+              <select id="q_energy_unit">
+                <option value="kcal">大卡 (kcal)</option>
+                <option value="kj">千焦 (kJ)</option>
+              </select>
+            </label>
           </div>
           <div class="preview" id="q_preview">≈ 0 大卡</div>
           <button class="primary-btn" id="addQuantityBtn">添加</button>

@@ -277,7 +277,7 @@ label {
   margin-bottom: 10px;
 }
 label.flex { flex: 1; }
-input[type="text"], input[type="number"], select {
+input[type="text"], input[type="number"], input[type="password"], select {
   width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -531,9 +531,22 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .login-card label {
   font-size: 13px;
   color: var(--muted);
-  margin-bottom: 14px;
+  margin-bottom: 16px;
+  display: block;
 }
-.login-card .primary-btn { margin-top: 4px; }
+.login-card input[type="password"],
+.login-card input[type="text"],
+.login-card select {
+  font-size: 17px;
+  padding: 14px 14px;
+  margin-top: 6px;
+  border-radius: 10px;
+}
+.login-card .primary-btn {
+  margin-top: 4px;
+  padding: 14px;
+  font-size: 16px;
+}
 .error-text {
   color: var(--danger);
   font-size: 13px;

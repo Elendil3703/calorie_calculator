@@ -95,6 +95,36 @@
   function $$(sel) { return document.querySelectorAll(sel); }
 
   // ---------- Auth ----------
+  // 识别 Supabase 抛出的「会话失效」类错误。出现这些时必须强制重新登录，
+  // 否则 localStorage 里的坏 token 会一直发给后端，所有请求都 401，
+  // 用户只能开无痕窗口（参见之前那个「后端连不上」的 bug）。
+  function isAuthError(e) {
+    if (!e) return false;
+    const status = e.status || (e.context && e.context.status) || 0;
+    if (status === 401 || status === 403) return true;
+    const msg = String(e.message || e.error_description || e).toLowerCase();
+    return /jwt|token|refresh|session|not authenticated|user.*not.*found|expired|unauthor/i.test(msg);
+  }
+  async function forceReauth(msg) {
+    console.warn('[forceReauth]', msg);
+    try { await sb.auth.signOut({ scope: 'local' }); } catch (_) {}
+    // 兜底：signOut 自己也可能因坏 token 出错，直接铲掉所有 sb-* 键。
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('sb-')) keys.push(k);
+      }
+      for (const k of keys) localStorage.removeItem(k);
+    } catch (_) {}
+    session = null;
+    userName = null;
+    userKey = null;
+    profile = null;
+    deficit = DEFAULT_DEFICIT;
+    if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
+    showLogin(msg || '会话已过期，请重新登录');
+  }
   function showLogin(msg) {
     $('#loginOverlay').classList.remove('hidden');
     $('#loginError').textContent = msg || '';
@@ -174,13 +204,21 @@
     payload.date = todayStr();
     payload.user_id = session.user.id;
     const { data, error } = await sb.from('entries').insert(payload).select().single();
-    if (error) { alert('添加失败：' + error.message); return null; }
+    if (error) {
+      if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return null; }
+      alert('添加失败：' + error.message);
+      return null;
+    }
     if (data.date === currentDate) todayEntries.unshift(data);
     return data;
   }
   async function removeEntry(id) {
     const { error } = await sb.from('entries').delete().eq('id', id);
-    if (error) { alert('删除失败：' + error.message); return; }
+    if (error) {
+      if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return; }
+      alert('删除失败：' + error.message);
+      return;
+    }
     todayEntries = todayEntries.filter(e => e.id !== id);
     renderToday();
   }
@@ -190,7 +228,11 @@
       threshold: value,
       updated_at: new Date().toISOString(),
     });
-    if (error) { alert('保存失败：' + error.message); return false; }
+    if (error) {
+      if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return false; }
+      alert('保存失败：' + error.message);
+      return false;
+    }
     deficit = value;
     return true;
   }
@@ -410,10 +452,13 @@
     const amount = parseFloat($('#q_amount').value);
     const unit = $('#q_unit').value;
     const per100 = parseFloat($('#q_per100').value);
+    const energyUnit = $('#q_energy_unit').value;
     if (!isFinite(amount) || amount <= 0) { alert('请输入有效摄入量'); return; }
-    if (!isFinite(per100) || per100 < 0) { alert('请输入每 100 单位的卡路里'); return; }
-    const kcal = (amount / 100) * per100;
-    const detail = `${round1(amount)}${unit} × ${round1(per100)} 大卡/100${unit}`;
+    if (!isFinite(per100) || per100 < 0) { alert('请输入每 100 单位的能量值'); return; }
+    const per100Kcal = energyUnit === 'kj' ? per100 * KJ_TO_KCAL : per100;
+    const kcal = (amount / 100) * per100Kcal;
+    const energyLabel = energyUnit === 'kj' ? '千焦' : '大卡';
+    const detail = `${round1(amount)}${unit} × ${round1(per100)} ${energyLabel}/100${unit}`;
     const btn = $('#addQuantityBtn');
     btn.disabled = true; const old = btn.textContent; btn.textContent = '添加中…';
     const entry = await addEntry({ name, calories: round1(kcal), mode: 'quantity', detail });
@@ -516,9 +561,11 @@
     const amount = parseFloat($('#q_amount').value);
     const per100 = parseFloat($('#q_per100').value);
     const unit = $('#q_unit').value;
+    const energyUnit = $('#q_energy_unit').value;
     $('#q_per_unit').textContent = unit === 'ml' ? '毫升' : '克';
     if (isFinite(amount) && isFinite(per100) && amount > 0 && per100 >= 0) {
-      const kcal = (amount / 100) * per100;
+      const per100Kcal = energyUnit === 'kj' ? per100 * KJ_TO_KCAL : per100;
+      const kcal = (amount / 100) * per100Kcal;
       $('#q_preview').textContent = `≈ ${round1(kcal)} 大卡`;
     } else {
       $('#q_preview').textContent = '≈ 0 大卡';
@@ -527,9 +574,9 @@
 
   // ---------- Setup events ----------
   function setupEvents() {
-    $('#loginBtn').addEventListener('click', handleLogin);
-    $('#loginPassword').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') handleLogin();
+    $('#loginForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      handleLogin();
     });
     $('#logoutBtn').addEventListener('click', handleLogout);
     $('#settingsLogoutBtn').addEventListener('click', handleLogout);
@@ -563,7 +610,7 @@
     });
     $('#addDirectBtn').addEventListener('click', handleAddDirect);
     $('#addQuantityBtn').addEventListener('click', handleAddQuantity);
-    ['q_amount', 'q_per100', 'q_unit'].forEach(id => {
+    ['q_amount', 'q_per100', 'q_unit', 'q_energy_unit'].forEach(id => {
       $('#' + id).addEventListener('input', updateQuantityPreview);
       $('#' + id).addEventListener('change', updateQuantityPreview);
     });
@@ -619,7 +666,13 @@
     });
     document.addEventListener('visibilitychange', async () => {
       if (document.hidden || !session) return;
-      try { await loadAll(); renderAll(); } catch (e) { console.warn(e); }
+      try {
+        await loadAll();
+        renderAll();
+      } catch (e) {
+        if (isAuthError(e)) { await forceReauth('会话已过期，请重新登录'); return; }
+        console.warn(e);
+      }
     });
   }
 
@@ -636,6 +689,7 @@
       scheduleMidnight();
     } catch (e) {
       console.warn(e);
+      if (isAuthError(e)) { await forceReauth('会话已过期，请重新登录'); return; }
       alert('加载数据失败：' + (e.message || e));
     }
   }
@@ -659,6 +713,10 @@
       if (event === 'SIGNED_IN' && sess) {
         session = sess;
         await afterAuth();
+      } else if ((event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && sess) {
+        // 保持本地 session 引用新鲜，否则 session.access_token 会过期、
+        // 而 session.user.id 虽不变但拿到的整个对象越来越旧。
+        session = sess;
       } else if (event === 'SIGNED_OUT') {
         session = null;
         userName = null;
@@ -670,7 +728,16 @@
       }
     });
 
-    const { data: { session: existing } } = await sb.auth.getSession();
+    // getSession 可能因 localStorage 里残留的坏 token 而抛错。
+    // 一旦抛错就清干净 sb-* 键并回到登录页，否则用户会卡死在加载状态。
+    let existing = null;
+    try {
+      const r = await sb.auth.getSession();
+      existing = r && r.data ? r.data.session : null;
+    } catch (e) {
+      await forceReauth('会话已重置，请重新登录');
+      return;
+    }
     if (existing) {
       session = existing;
       await afterAuth();
