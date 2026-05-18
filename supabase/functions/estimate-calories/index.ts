@@ -79,7 +79,10 @@ serve(async (req) => {
     if (!claudeResponse.ok) {
       const errText = await claudeResponse.text();
       console.error('Anthropic API error:', claudeResponse.status, errText);
-      return json({ error: 'AI 服务异常，请稍后重试' }, 502);
+      return json({
+        error: 'AI 服务异常',
+        detail: `Anthropic ${claudeResponse.status}: ${errText.slice(0, 500)}`,
+      }, 502);
     }
 
     const claudeData = await claudeResponse.json();
@@ -87,14 +90,20 @@ serve(async (req) => {
     const match = text.match(/\{[\s\S]*\}/);
     if (!match) {
       console.error('No JSON in response:', text);
-      return json({ error: 'AI 返回格式异常' }, 502);
+      return json({
+        error: 'AI 返回格式异常',
+        detail: `raw: ${text.slice(0, 500)}`,
+      }, 502);
     }
 
     let parsed: { name?: string; calories?: number; error?: string };
     try {
       parsed = JSON.parse(match[0]);
-    } catch {
-      return json({ error: 'AI 返回解析失败' }, 502);
+    } catch (e) {
+      return json({
+        error: 'AI 返回解析失败',
+        detail: `${(e as Error).message} | raw: ${match[0].slice(0, 300)}`,
+      }, 502);
     }
 
     if (parsed.error === 'not_food') {
@@ -103,7 +112,10 @@ serve(async (req) => {
 
     const calories = Math.round(Number(parsed.calories));
     if (!Number.isFinite(calories) || calories < 0 || calories > 10000) {
-      return json({ error: 'AI 返回数值异常' }, 502);
+      return json({
+        error: 'AI 返回数值异常',
+        detail: `parsed: ${JSON.stringify(parsed).slice(0, 300)}`,
+      }, 502);
     }
 
     const name = String(parsed.name || description).slice(0, 100);
@@ -111,7 +123,11 @@ serve(async (req) => {
     return json({ name, calories });
   } catch (e) {
     console.error('Unhandled error:', e);
-    return json({ error: String((e as Error).message || e) }, 500);
+    const err = e as Error;
+    return json({
+      error: '函数内部错误',
+      detail: `${err.name || 'Error'}: ${err.message || String(e)}${err.stack ? '\n' + err.stack.slice(0, 500) : ''}`,
+    }, 500);
   }
 });
 

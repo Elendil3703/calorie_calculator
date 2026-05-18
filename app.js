@@ -456,20 +456,25 @@
         body: { description },
       });
       if (error) {
-        // Edge function returned non-2xx; try to read the structured error body
+        // Edge function returned non-2xx; try to read the structured error body for the detail
         let msg = error.message || 'AI 估算失败';
+        let detail = '';
         try {
           const ctx = error.context;
           if (ctx && typeof ctx.json === 'function') {
             const body = await ctx.json();
             if (body && body.error) msg = body.error;
+            if (body && body.detail) detail = body.detail;
           }
-        } catch { /* ignore */ }
-        showAiError(msg);
+        } catch (parseErr) {
+          detail = '(无法读取响应体: ' + (parseErr.message || parseErr) + ')';
+        }
+        showAiError(detail ? `${msg}\n${detail}` : msg);
+        console.error('estimate-calories failed:', msg, detail);
         return;
       }
       if (!data || typeof data.calories !== 'number') {
-        showAiError('AI 返回格式异常');
+        showAiError('AI 返回格式异常: ' + JSON.stringify(data).slice(0, 200));
         return;
       }
       aiEstimate = { name: data.name || description, calories: round1(data.calories) };

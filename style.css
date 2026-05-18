@@ -255,7 +255,19 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; padding-bottom: 40px; }
 .ai-result-kcal { font-weight: 700; font-size: 18px; color: #0369a1; white-space: nowrap; }
 .ai-result-kcal span { font-size: 22px; }
 .ai-hint { margin: 6px 0 0; font-size: 12px; }
-.ai-error { text-align: left; margin: 0 0 12px; min-height: 0; }
+.ai-error {
+  text-align: left;
+  margin: 0 0 12px;
+  min-height: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
 
 /* Form */
 label {
