@@ -474,11 +474,13 @@
       const total = dateStr === today ? todayTotal : (historyData[dateStr] || 0);
       series.push({ date: dateStr, total });
     }
-    const nonZero = series.filter(s => s.total > 0);
-    const sum = series.reduce((a, b) => a + b.total, 0);
-    const avg = nonZero.length ? sum / nonZero.length : 0;
+    // 日均/超额天数只统计到前一天，今天可能还没填完
+    const pastSeries = series.filter(s => s.date !== today);
+    const pastNonZero = pastSeries.filter(s => s.total > 0);
+    const sum = pastNonZero.reduce((a, b) => a + b.total, 0);
+    const avg = pastNonZero.length ? sum / pastNonZero.length : 0;
     const max = series.reduce((a, b) => Math.max(a, b.total), 0);
-    const overCount = series.filter(s => s.total > target).length;
+    const overCount = pastSeries.filter(s => s.total > target).length;
     $('#statsSummary').innerHTML = `
       <div class="item"><div class="num">${round1(avg)}</div><div class="lab">日均 (有记录)</div></div>
       <div class="item"><div class="num">${overCount}</div><div class="lab">超额天数</div></div>
