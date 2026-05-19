@@ -174,30 +174,24 @@
 
   // ---------- Auth ----------
   // Supabase 默认的 lock 实现会用 navigator.locks 阻塞式等另一个标签释放锁。
-  // 如果有标签崩了 / 被浏览器后台节流 / OneDrive 同步把页面卡住，那把锁永远不释放，
-  // 新登录请求 200 回来之后写不进 storage，SIGNED_IN 事件不发，UI 不跳转。
-  // 这里用 ifAvailable 轮询 + 3 秒强制放行兜底（应用是单用户、写入是 session token，
-  // 极小概率 last-write-wins 完全可接受）。
+  // 如果有标签崩了 / 被浏览器后台节流 / OneDrive 同步把页面卡住，那把锁永远不释放。
+  //
+  // 这里只用 ifAvailable 试一次，拿不到立刻 last-write-wins 放行。
+  // 历史版本是"3 秒轮询 + 强制放行"——但锁被另一个 tab 的卡死 refresh 占住时，
+  // 等多久都不会回来，每个查询白付 3 秒等锁预算，外层 6-8 秒 timeout 一打满
+  // UI 就看起来"会话不稳、经常断连"。这是单用户应用，并发改 session token 的
+  // 概率约等于 0，单次尝试 + 直接放行的成本远小于等锁的成本。
   async function authLock(name, acquireTimeout, fn) {
     if (typeof navigator === 'undefined' || !navigator.locks || !navigator.locks.request) {
       return await fn();
     }
-    const tryOnce = () => navigator.locks.request(
+    const r = await navigator.locks.request(
       name,
       { mode: 'exclusive', ifAvailable: true },
       async (lock) => lock ? { ok: true, value: await fn() } : { ok: false }
     );
-    const budget = Math.max(500, Math.min(acquireTimeout || 3000, 3000));
-    const start = Date.now();
-    while (true) {
-      const r = await tryOnce();
-      if (r.ok) return r.value;
-      if (Date.now() - start >= budget) {
-        console.warn('[authLock] timeout, proceeding without lock:', name);
-        return await fn();
-      }
-      await new Promise(res => setTimeout(res, 80));
-    }
+    if (r.ok) return r.value;
+    return await fn();
   }
   // 识别 Supabase 抛出的「会话失效」类错误。出现这些时必须强制重新登录，
   // 否则 localStorage 里的坏 token 会一直发给后端，所有请求都 401，
@@ -1198,7 +1192,8 @@
         autoRefreshToken: true,
         // 默认 lock 跨标签共享 navigator.locks，另一个标签崩/被节流时会
         // 把锁挂死，新登录就会停在 200 之后写不进 storage，UI 不跳转。
-        // 这里改成 ifAvailable 轮询 + 3 秒后强制放行（last-write-wins 兜底）。
+        // 这里改成 ifAvailable 单次尝试 + 立刻 last-write-wins 兜底，
+        // 避免每个查询都白等 3 秒锁。详见 authLock 函数顶部注释。
         lock: authLock,
       }
     });
