@@ -230,6 +230,37 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; padding-bottom: 40px; }
 }
 .mode-btn.active { background: var(--card); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
 
+/* Sub switch — used inside quantity mode for source 自定义/从冰箱选择 */
+.sub-switch {
+  display: flex;
+  background: #f3f4f6;
+  border-radius: 8px;
+  padding: 2px;
+  margin-bottom: 12px;
+}
+.sub-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 6px 4px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 6px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.sub-btn.active { background: var(--card); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+
+.fridge-pick-info {
+  background: #f9fafb;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 0 0 10px;
+  font-size: 12.5px;
+}
+.fridge-pick-info.has-pick { color: var(--text); }
+
 /* AI mode */
 .secondary-btn.full-width {
   width: 100%;
@@ -360,6 +391,39 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 }
 .entry-list .delete:hover { color: var(--danger); }
 .entry-list .empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 24px 0;
+  border-bottom: none;
+  font-size: 14px;
+}
+
+/* Fridge list — same shape as entry-list, plus edit button. */
+.fridge-list { list-style: none; padding: 0; margin: 0; }
+.fridge-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+.fridge-list li:last-child { border-bottom: none; }
+.fridge-list .name { font-weight: 500; }
+.fridge-list .detail { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.fridge-list .actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.fridge-list .edit, .fridge-list .delete {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  font-family: inherit;
+}
+.fridge-list .edit:hover { color: var(--primary); }
+.fridge-list .delete:hover { color: var(--danger); }
+.fridge-list .empty {
   color: var(--muted);
   text-align: center;
   padding: 24px 0;

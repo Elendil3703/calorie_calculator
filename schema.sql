@@ -44,3 +44,23 @@ alter table public.daily_exercise enable row level security;
 
 create policy "daily_exercise_own" on public.daily_exercise
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- 我的冰箱：用户自己维护的食物清单，作为「按重量/体积」录入时的能量参考。
+-- kcal 字段一律存大卡（kJ 在前端入库前换算），basis 决定它是 "每 100g/ml" 还是 "每份"。
+create table public.fridge_items (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid not null references auth.users(id) on delete cascade,
+  name        text not null,
+  kcal        numeric not null,
+  basis       text not null check (basis in ('per_100g', 'per_serving')),
+  expiry_date date,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+
+create index fridge_items_user_idx on public.fridge_items(user_id);
+
+alter table public.fridge_items enable row level security;
+
+create policy "fridge_items_own" on public.fridge_items
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);

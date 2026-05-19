@@ -32,6 +32,7 @@
   const LAST_LOGIN_KEY = 'calorie_calc_last_login_user';
   // 用户改运动量时，每按一下键都打一次库太浪费——攒 600ms 没新输入再写。
   const EXERCISE_SAVE_DEBOUNCE_MS = 600;
+  const FRIDGE_BASIS_LABEL = { per_100g: '100g', per_serving: '份' };
 
   // ---------- State ----------
   let sb = null;
@@ -49,6 +50,11 @@
   let currentDate = null;
   let aiEstimate = null;
   let exerciseSaveTimer = null;
+  let fridgeItems = [];
+  // null = 添加模式；非 null = 正在编辑那一项 id
+  let editingFridgeId = null;
+  // 按重量/体积模式下的来源：'custom'（自定义输入）或 'fridge'（从冰箱选）
+  let quantitySource = 'custom';
   // 启动兜底定时器：12s 内 init 没走到稳定态就 hardReset。提到模块作用域，
   // 让 hardReset 能从任意路径里清掉它，不只是 DOMContentLoaded 内部。
   let initWatchdog = null;
@@ -372,6 +378,21 @@
     for (const row of (hist || [])) {
       historyData[row.date] = (historyData[row.date] || 0) + Number(row.calories);
     }
+
+    // fridge_items 表如果还没在 Supabase 里建好，PostgREST 会回 PGRST205/42P01。
+    // 那时整个 loadAll 不应该挂掉——其余功能（今日/统计）都能继续用。
+    try {
+      const { data: fridge, error: e4 } = await withTimeout(
+        sb.from('fridge_items').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+        8000,
+        'loadAll/fridge'
+      );
+      if (e4) throw e4;
+      fridgeItems = fridge || [];
+    } catch (e) {
+      console.warn('[loadAll/fridge] failed (treating as empty):', e);
+      fridgeItems = [];
+    }
   }
 
   async function addEntry(payload) {
@@ -411,6 +432,41 @@
     return true;
   }
 
+  // ---------- Fridge ----------
+  async function addFridgeItem(payload) {
+    payload.user_id = session.user.id;
+    const { data, error } = await sb.from('fridge_items').insert(payload).select().single();
+    if (error) {
+      if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return null; }
+      alert('添加失败：' + error.message);
+      return null;
+    }
+    fridgeItems.unshift(data);
+    return data;
+  }
+  async function updateFridgeItem(id, patch) {
+    patch.updated_at = new Date().toISOString();
+    const { data, error } = await sb.from('fridge_items')
+      .update(patch).eq('id', id).select().single();
+    if (error) {
+      if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return null; }
+      alert('保存失败：' + error.message);
+      return null;
+    }
+    const idx = fridgeItems.findIndex(it => it.id === id);
+    if (idx >= 0) fridgeItems[idx] = data;
+    return data;
+  }
+  async function removeFridgeItem(id) {
+    const { error } = await sb.from('fridge_items').delete().eq('id', id);
+    if (error) {
+      if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return; }
+      alert('删除失败：' + error.message);
+      return;
+    }
+    fridgeItems = fridgeItems.filter(it => it.id !== id);
+  }
+
   // ---------- Midnight rollover ----------
   function scheduleMidnight() {
     if (midnightTimer) clearTimeout(midnightTimer);
@@ -429,6 +485,7 @@
   function renderAll() {
     renderHeader();
     renderToday();
+    renderFridge();
     renderStats();
     renderSettings();
   }
@@ -499,6 +556,81 @@
       li.appendChild(right);
       list.appendChild(li);
     }
+  }
+  function fridgeKcalLabel(item) {
+    return `${round1(item.kcal)} 大卡 / ${FRIDGE_BASIS_LABEL[item.basis]}`;
+  }
+  function renderFridge() {
+    populateFridgePicker();
+    const list = $('#fridgeList');
+    list.innerHTML = '';
+    if (fridgeItems.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'empty';
+      li.textContent = '冰箱还是空的，先添加一项吧';
+      list.appendChild(li);
+      return;
+    }
+    for (const item of fridgeItems) {
+      const li = document.createElement('li');
+      const left = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = item.name;
+      const detail = document.createElement('div');
+      detail.className = 'detail';
+      let detailText = fridgeKcalLabel(item);
+      if (item.expiry_date) detailText += ` · 过期 ${item.expiry_date}`;
+      detail.textContent = detailText;
+      left.appendChild(name);
+      left.appendChild(detail);
+
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const editBtn = document.createElement('button');
+      editBtn.className = 'edit';
+      editBtn.textContent = '✎';
+      editBtn.title = '编辑';
+      editBtn.addEventListener('click', () => enterFridgeEdit(item));
+      const delBtn = document.createElement('button');
+      delBtn.className = 'delete';
+      delBtn.textContent = '×';
+      delBtn.title = '删除';
+      delBtn.addEventListener('click', () => handleDeleteFridge(item));
+      actions.appendChild(editBtn);
+      actions.appendChild(delBtn);
+
+      li.appendChild(left);
+      li.appendChild(actions);
+      list.appendChild(li);
+    }
+  }
+  function populateFridgePicker() {
+    const sel = $('#q_fridge_item');
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = '';
+    if (fridgeItems.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '（冰箱里没有食物）';
+      sel.appendChild(opt);
+    } else {
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = '（请选择）';
+      sel.appendChild(placeholder);
+      for (const item of fridgeItems) {
+        const opt = document.createElement('option');
+        opt.value = item.id;
+        opt.textContent = `${item.name}（${fridgeKcalLabel(item)}）`;
+        sel.appendChild(opt);
+      }
+    }
+    if (prev && fridgeItems.some(it => it.id === prev)) {
+      sel.value = prev;
+    }
+    updateFridgePickerInfo();
   }
   function showLastEntryToast(entry) {
     const total = entriesTotal(todayEntries);
@@ -623,30 +755,144 @@
     }
   }
   async function handleAddQuantity() {
-    const name = $('#q_name').value.trim() || '未命名';
-    const amount = parseFloat($('#q_amount').value);
-    const unit = $('#q_unit').value;
-    const per100 = parseFloat($('#q_per100').value);
-    const energyUnit = $('#q_energy_unit').value;
-    if (!isFinite(amount) || amount <= 0) { alert('请输入有效摄入量'); return; }
-    if (!isFinite(per100) || per100 < 0) { alert('请输入每 100 单位的能量值'); return; }
-    const per100Kcal = energyUnit === 'kj' ? per100 * KJ_TO_KCAL : per100;
-    const kcal = (amount / 100) * per100Kcal;
-    const energyLabel = energyUnit === 'kj' ? '千焦' : '大卡';
-    const detail = `${round1(amount)}${unit} × ${round1(per100)} ${energyLabel}/100${unit}`;
     const btn = $('#addQuantityBtn');
+    let payload;
+    if (quantitySource === 'fridge') {
+      const item = getSelectedFridgeItem();
+      if (!item) { alert('请先选择冰箱里的食物'); return; }
+      const amount = parseFloat($('#q_fridge_amount').value);
+      if (!isFinite(amount) || amount <= 0) { alert('请输入有效摄入量'); return; }
+      let kcal, detail;
+      if (item.basis === 'per_serving') {
+        kcal = amount * Number(item.kcal);
+        detail = `${round1(amount)} 份 × ${round1(item.kcal)} 大卡/份 · 来自冰箱`;
+      } else {
+        const unit = $('#q_fridge_unit').value;
+        kcal = (amount / 100) * Number(item.kcal);
+        detail = `${round1(amount)}${unit} × ${round1(item.kcal)} 大卡/100${unit} · 来自冰箱`;
+      }
+      payload = { name: item.name, calories: round1(kcal), mode: 'quantity', detail };
+    } else {
+      const name = $('#q_name').value.trim() || '未命名';
+      const amount = parseFloat($('#q_amount').value);
+      const unit = $('#q_unit').value;
+      const per100 = parseFloat($('#q_per100').value);
+      const energyUnit = $('#q_energy_unit').value;
+      if (!isFinite(amount) || amount <= 0) { alert('请输入有效摄入量'); return; }
+      if (!isFinite(per100) || per100 < 0) { alert('请输入每 100 单位的能量值'); return; }
+      const per100Kcal = energyUnit === 'kj' ? per100 * KJ_TO_KCAL : per100;
+      const kcal = (amount / 100) * per100Kcal;
+      const energyLabel = energyUnit === 'kj' ? '千焦' : '大卡';
+      const detail = `${round1(amount)}${unit} × ${round1(per100)} ${energyLabel}/100${unit}`;
+      payload = { name, calories: round1(kcal), mode: 'quantity', detail };
+    }
     btn.disabled = true; const old = btn.textContent; btn.textContent = '添加中…';
-    const entry = await addEntry({ name, calories: round1(kcal), mode: 'quantity', detail });
+    const entry = await addEntry(payload);
     btn.disabled = false; btn.textContent = old;
     if (entry) {
-      $('#q_name').value = '';
-      $('#q_amount').value = '';
-      $('#q_per100').value = '';
+      if (quantitySource === 'fridge') {
+        $('#q_fridge_amount').value = '';
+      } else {
+        $('#q_name').value = '';
+        $('#q_amount').value = '';
+        $('#q_per100').value = '';
+      }
       updateQuantityPreview();
-      $('#q_name').focus();
+      if (quantitySource === 'fridge') $('#q_fridge_amount').focus();
+      else $('#q_name').focus();
       renderToday();
       showLastEntryToast(entry);
     }
+  }
+  function getSelectedFridgeItem() {
+    const id = $('#q_fridge_item').value;
+    if (!id) return null;
+    return fridgeItems.find(it => it.id === id) || null;
+  }
+  function updateFridgePickerInfo() {
+    const info = $('#q_fridge_info');
+    const unitSel = $('#q_fridge_unit');
+    if (!info || !unitSel) return;
+    const item = getSelectedFridgeItem();
+    if (!item) {
+      info.textContent = '先选一项冰箱里的食物';
+      info.classList.remove('has-pick');
+      // 默认 g/ml 选项；没选时单位选什么都没影响。
+      if (unitSel.options.length === 0 || unitSel.options[0].value !== 'g') {
+        unitSel.innerHTML = '<option value="g">克 (g)</option><option value="ml">毫升 (ml)</option>';
+      }
+      unitSel.disabled = false;
+      return;
+    }
+    let text = `${item.name}：${fridgeKcalLabel(item)}`;
+    if (item.expiry_date) text += ` · 过期 ${item.expiry_date}`;
+    info.textContent = text;
+    info.classList.add('has-pick');
+    // 计量是「每份」时摄入量单位只能是"份"；是「100g/ml」时让用户在 g/ml 里选。
+    if (item.basis === 'per_serving') {
+      unitSel.innerHTML = '<option value="份">份</option>';
+      unitSel.disabled = true;
+    } else {
+      const prev = unitSel.value;
+      unitSel.innerHTML = '<option value="g">克 (g)</option><option value="ml">毫升 (ml)</option>';
+      unitSel.disabled = false;
+      if (prev === 'g' || prev === 'ml') unitSel.value = prev;
+    }
+  }
+  function resetFridgeForm() {
+    editingFridgeId = null;
+    $('#fridgeFormTitle').textContent = '添加到冰箱';
+    $('#addFridgeBtn').textContent = '添加';
+    $('#cancelFridgeEditBtn').classList.add('hidden');
+    $('#f_name').value = '';
+    $('#f_kcal').value = '';
+    $('#f_unit').value = 'kcal';
+    $('#f_basis').value = 'per_100g';
+    $('#f_expiry').value = '';
+  }
+  function enterFridgeEdit(item) {
+    editingFridgeId = item.id;
+    $('#fridgeFormTitle').textContent = '编辑食物';
+    $('#addFridgeBtn').textContent = '保存修改';
+    $('#cancelFridgeEditBtn').classList.remove('hidden');
+    $('#f_name').value = item.name;
+    // 入库一律是 kcal，所以编辑回填时单位也固定 kcal——避免回填 kJ 时再换一次算。
+    $('#f_kcal').value = round1(item.kcal);
+    $('#f_unit').value = 'kcal';
+    $('#f_basis').value = item.basis;
+    $('#f_expiry').value = item.expiry_date || '';
+    $('#f_name').focus();
+  }
+  async function handleAddOrSaveFridge() {
+    const name = $('#f_name').value.trim();
+    const rawKcal = parseFloat($('#f_kcal').value);
+    const unit = $('#f_unit').value;
+    const basis = $('#f_basis').value;
+    const expiry = $('#f_expiry').value || null;
+    if (!name) { alert('请输入食物名称'); return; }
+    if (!isFinite(rawKcal) || rawKcal <= 0) { alert('请输入有效的热量值'); return; }
+    const kcal = round1(unit === 'kj' ? rawKcal * KJ_TO_KCAL : rawKcal);
+    const btn = $('#addFridgeBtn');
+    btn.disabled = true; const old = btn.textContent;
+    btn.textContent = editingFridgeId ? '保存中…' : '添加中…';
+    let ok = null;
+    if (editingFridgeId) {
+      ok = await updateFridgeItem(editingFridgeId, { name, kcal, basis, expiry_date: expiry });
+    } else {
+      ok = await addFridgeItem({ name, kcal, basis, expiry_date: expiry });
+    }
+    btn.disabled = false; btn.textContent = old;
+    if (ok) {
+      resetFridgeForm();
+      renderFridge();
+    }
+  }
+  async function handleDeleteFridge(item) {
+    if (!confirm(`确定从冰箱里删除「${item.name}」？`)) return;
+    await removeFridgeItem(item.id);
+    // 删的恰好是正在编辑那项，退出编辑态。
+    if (editingFridgeId === item.id) resetFridgeForm();
+    renderFridge();
   }
   function resetAiPanel() {
     aiEstimate = null;
@@ -733,6 +979,18 @@
   }
 
   function updateQuantityPreview() {
+    if (quantitySource === 'fridge') {
+      const item = getSelectedFridgeItem();
+      const amount = parseFloat($('#q_fridge_amount').value);
+      if (item && isFinite(amount) && amount > 0) {
+        const k = Number(item.kcal);
+        const kcal = item.basis === 'per_serving' ? amount * k : (amount / 100) * k;
+        $('#q_preview').textContent = `≈ ${round1(kcal)} 大卡`;
+      } else {
+        $('#q_preview').textContent = '≈ 0 大卡';
+      }
+      return;
+    }
     const amount = parseFloat($('#q_amount').value);
     const per100 = parseFloat($('#q_per100').value);
     const unit = $('#q_unit').value;
@@ -795,6 +1053,25 @@
       $('#' + id).addEventListener('input', updateQuantityPreview);
       $('#' + id).addEventListener('change', updateQuantityPreview);
     });
+    $$('.sub-btn').forEach(b => {
+      b.addEventListener('click', () => {
+        $$('.sub-btn').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        quantitySource = b.dataset.source;
+        $('#q-source-custom').classList.toggle('hidden', quantitySource !== 'custom');
+        $('#q-source-fridge').classList.toggle('hidden', quantitySource !== 'fridge');
+        updateQuantityPreview();
+      });
+    });
+    $('#q_fridge_item').addEventListener('change', () => {
+      updateFridgePickerInfo();
+      updateQuantityPreview();
+    });
+    $('#q_fridge_amount').addEventListener('input', updateQuantityPreview);
+    $('#q_fridge_unit').addEventListener('change', updateQuantityPreview);
+
+    $('#addFridgeBtn').addEventListener('click', handleAddOrSaveFridge);
+    $('#cancelFridgeEditBtn').addEventListener('click', () => resetFridgeForm());
     $('#estimateBtn').addEventListener('click', handleEstimateAi);
     $('#addAiBtn').addEventListener('click', handleAddAi);
     $('#ai_description').addEventListener('keydown', (e) => {
