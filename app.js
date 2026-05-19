@@ -202,8 +202,15 @@
   }
   async function forceReauth(msg) {
     console.warn('[forceReauth]', msg);
-    try { await sb.auth.signOut({ scope: 'local' }); } catch (_) {}
-    // 兜底：signOut 自己也可能因坏 token 出错，直接铲掉所有 sb-* 键。
+    // signOut 自己也走 auth lock，坏 token / 锁竞争下同样会 hang，
+    // 没超时的话 forceReauth 永远不返回，UI 永远卡在 loading——
+    // 这就是上一版 timeout 兜底为什么没生效。这里 2 秒强制放行。
+    try {
+      await withTimeout(sb.auth.signOut({ scope: 'local' }), 2000, 'forceReauth/signOut');
+    } catch (e) {
+      console.warn('[forceReauth] signOut skipped:', e.message || e);
+    }
+    // 兜底：signOut 自己也可能因坏 token 出错或刚刚被超时跳过，直接铲掉所有 sb-* 键。
     try {
       const keys = [];
       for (let i = 0; i < localStorage.length; i++) {
@@ -242,11 +249,30 @@
     btn.disabled = true;
     btn.textContent = '登录中…';
     try {
-      const { error } = await sb.auth.signInWithPassword({ email: user.email, password });
+      // 套超时，否则锁/网络卡死时按钮永远停在"登录中…"。
+      const { error } = await withTimeout(
+        sb.auth.signInWithPassword({ email: user.email, password }),
+        10000,
+        'signInWithPassword'
+      );
       if (error) throw error;
       localStorage.setItem(LAST_LOGIN_KEY, key);
     } catch (e) {
-      $('#loginError').textContent = '登录失败：' + (e.message || '未知错误');
+      if (e.__timeout) {
+        // 登录请求卡住，多半 auth 锁/storage 坏了，硬清理 sb-* 后让用户再点一次。
+        console.warn('[handleLogin] timeout — purging sb-* and prompting retry');
+        try {
+          const keys = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith('sb-')) keys.push(k);
+          }
+          for (const k of keys) localStorage.removeItem(k);
+        } catch (_) {}
+        $('#loginError').textContent = '登录请求超时，已清理本地会话，请再点一次登录';
+      } else {
+        $('#loginError').textContent = '登录失败：' + (e.message || '未知错误');
+      }
     } finally {
       btn.disabled = false;
       btn.textContent = '登录';
@@ -840,10 +866,41 @@
     });
     setupEvents();
 
+    // 终极兜底：12 秒内启动流程没走到"登录页可见"或"今日页可见"任一稳定态，
+    // 就硬清 sb-* 并 reload 一次。任何 await 卡死、forceReauth 自己也卡的
+    // 极端组合都能救回来。sessionStorage 防同窗口反复 reload。
+    let initWatchdog = setTimeout(() => {
+      initWatchdog = null;
+      console.warn('[init] watchdog fired — hard reset');
+      try {
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('sb-')) keys.push(k);
+        }
+        for (const k of keys) localStorage.removeItem(k);
+      } catch (_) {}
+      if (!sessionStorage.getItem('cc_emergency_reset')) {
+        sessionStorage.setItem('cc_emergency_reset', '1');
+        location.reload();
+      } else {
+        // 已经 reload 过一次还是死，就不再 reload 防循环，强行露出登录页。
+        try {
+          $('#loginOverlay').classList.remove('hidden');
+          $('#loginError').textContent = '启动反复失败，请检查网络或浏览器拦截';
+        } catch (_) {}
+      }
+    }, 12000);
+    function clearInitWatchdog() {
+      if (initWatchdog) { clearTimeout(initWatchdog); initWatchdog = null; }
+      sessionStorage.removeItem('cc_emergency_reset');
+    }
+
     sb.auth.onAuthStateChange(async (event, sess) => {
       if (event === 'SIGNED_IN' && sess) {
         session = sess;
         await afterAuth();
+        clearInitWatchdog();
       } else if ((event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && sess) {
         // 保持本地 session 引用新鲜，否则 session.access_token 会过期、
         // 而 session.user.id 虽不变但拿到的整个对象越来越旧。
@@ -856,6 +913,7 @@
         deficit = DEFAULT_DEFICIT;
         if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
         showLogin();
+        clearInitWatchdog();
       }
     });
 
@@ -870,6 +928,7 @@
     } catch (e) {
       console.warn('[init] getSession failed:', e);
       await forceReauth(e.__timeout ? '会话异常已重置，请重新登录' : '会话已重置，请重新登录');
+      clearInitWatchdog();
       return;
     }
     if (existing) {
@@ -878,5 +937,6 @@
     } else {
       showLogin();
     }
+    clearInitWatchdog();
   });
 })();
