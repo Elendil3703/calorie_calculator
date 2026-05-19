@@ -49,6 +49,9 @@
   let currentDate = null;
   let aiEstimate = null;
   let exerciseSaveTimer = null;
+  // 启动兜底定时器：12s 内 init 没走到稳定态就 hardReset。提到模块作用域，
+  // 让 hardReset 能从任意路径里清掉它，不只是 DOMContentLoaded 内部。
+  let initWatchdog = null;
 
   function targetIntake() {
     if (!profile) return 0;
@@ -200,6 +203,33 @@
     const msg = String(e.message || e.error_description || e).toLowerCase();
     return /jwt|token|refresh|session|not authenticated|user.*not.*found|expired|unauthor/i.test(msg);
   }
+  // 重连/会话恢复失败时的终极兜底：清 sb-* + reload 一次。
+  // 为什么不能光 forceReauth？supabase 客户端实例内部可能挂着卡死的
+  // refresh promise / navigator.locks 引用，光清 localStorage 不掉，
+  // 下一次 signInWithPassword 也会被同一把卡死的锁拖垮——用户只能手动
+  // 刷新整个页面才好。这里替用户做了那次刷新。
+  // sessionStorage 标志防循环：reload 后还触发就只 cleanup 不 reload，
+  // 调用方落回 forceReauth/showLogin。成功 init 时 clearInitWatchdog
+  // 会顺手把这个标志清掉，下次出错才能再 reload 一次。
+  // 返回 true = 即将 reload；false = 这次不 reload，调用方自行兜底。
+  function hardReset(reason) {
+    console.warn('[hardReset]', reason);
+    if (initWatchdog) { clearTimeout(initWatchdog); initWatchdog = null; }
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('sb-')) keys.push(k);
+      }
+      for (const k of keys) localStorage.removeItem(k);
+    } catch (_) {}
+    if (!sessionStorage.getItem('cc_emergency_reset')) {
+      sessionStorage.setItem('cc_emergency_reset', '1');
+      location.reload();
+      return true;
+    }
+    return false;
+  }
   async function forceReauth(msg) {
     console.warn('[forceReauth]', msg);
     // signOut 自己也走 auth lock，坏 token / 锁竞争下同样会 hang，
@@ -232,6 +262,15 @@
     $('#loginError').textContent = msg || '';
     const last = localStorage.getItem(LAST_LOGIN_KEY);
     if (last && USERS[last]) $('#loginUser').value = last;
+    // init 期间按钮默认是 disabled 的「正在恢复会话…」（见 DOMContentLoaded）。
+    // showLogin 说明该让用户登录了，把按钮放回可点。
+    // 但要避开 handleLogin 进行中的「登录中…」——那是真正在登的状态，
+    // 不能被异步事件（如 SIGNED_OUT 巧合触发 showLogin）覆盖回「登录」。
+    const btn = $('#loginBtn');
+    if (btn.textContent !== '登录中…') {
+      btn.disabled = false;
+      btn.textContent = '登录';
+    }
     $('#loginPassword').focus();
   }
   function hideLogin() {
@@ -239,6 +278,10 @@
     $('#loginPassword').value = '';
   }
   async function handleLogin() {
+    // init 期间按钮处于「正在恢复会话…」disabled。表单 submit 还可能
+    // 从 Enter 键绕过 disabled，这里再保险一次：disabled 就不要往下走。
+    // 也顺手挡住 handleLogin 自身的重入（已经 disabled=true + 登录中…）。
+    if ($('#loginBtn').disabled) return;
     const key = $('#loginUser').value;
     const password = $('#loginPassword').value;
     const user = USERS[key];
@@ -812,9 +855,12 @@
         await loadAll();
         renderAll();
       } catch (e) {
-        // 切回前台再 loadAll 超时，多半是 token 在后台被 rotate 出问题
-        // 或者锁被节流挂住了，按会话失效处理一次性清干净。
+        // 切回前台 loadAll 超时多半是 token 在后台被 rotate 出问题，
+        // 或锁被节流挂住——hardReset reload 替用户做手动刷新那一步，
+        // 重建 supabase 客户端丢掉所有卡死的内部状态。reload 用过一次
+        // 就只能落回 in-page forceReauth。
         if (isAuthError(e) || e.__timeout) {
+          if (hardReset('visibilitychange/loadAll')) return;
           await forceReauth('会话异常已重置，请重新登录');
           return;
         }
@@ -836,9 +882,11 @@
       scheduleMidnight();
     } catch (e) {
       console.warn('[afterAuth] loadAll failed:', e);
-      // 超时几乎一定意味着 token 坏了（refresh 卡死之类），按会话失效处理
-      // 而不是弹 alert 让用户卡在 overlay 上无法操作。
+      // 超时基本等于 token 坏了 / 锁卡死。光 forceReauth 清不掉 supabase 客户端
+      // 内部那些卡住的 promise/lock，下一次 signInWithPassword 也会被拖垮——
+      // 用户只能手动刷新。这里 hardReset 先 reload 一次替他做。
       if (isAuthError(e) || e.__timeout) {
+        if (hardReset('afterAuth/loadAll')) return;
         await forceReauth('会话异常已重置，请重新登录');
         return;
       }
@@ -868,30 +916,27 @@
     });
     setupEvents();
 
+    // 登录覆盖层 HTML 默认就是可见的——init 期间用户看到登录页会忍不住点
+    // 登录，跟后台 session 恢复 / refresh 抢同一把 auth lock，把 supabase
+    // 客户端内部状态搞死，最终连环出现「登录中→会话异常→登录超时」三连。
+    // init 期间先禁用按钮，等 getSession 决定下一步（恢复成功隐藏遮罩 /
+    // 失败 hardReset 走 reload / 无 session 走 showLogin 放回可点）。
+    const loginBtn = $('#loginBtn');
+    loginBtn.disabled = true;
+    loginBtn.textContent = '正在恢复会话…';
+
     // 终极兜底：12 秒内启动流程没走到"登录页可见"或"今日页可见"任一稳定态，
-    // 就硬清 sb-* 并 reload 一次。任何 await 卡死、forceReauth 自己也卡的
-    // 极端组合都能救回来。sessionStorage 防同窗口反复 reload。
-    let initWatchdog = setTimeout(() => {
-      initWatchdog = null;
-      console.warn('[init] watchdog fired — hard reset');
+    // 就 hardReset（清 sb-* + reload 一次）。任何 await 卡死、forceReauth
+    // 自己也卡的极端组合都能救回来。
+    initWatchdog = setTimeout(() => {
+      if (hardReset('init/watchdog 12s')) return;
+      // 已经 reload 过一次还是死，露出登录页让用户手动重试。
       try {
-        const keys = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k && k.startsWith('sb-')) keys.push(k);
-        }
-        for (const k of keys) localStorage.removeItem(k);
+        $('#loginOverlay').classList.remove('hidden');
+        $('#loginError').textContent = '启动反复失败，请检查网络或浏览器拦截';
+        loginBtn.disabled = false;
+        loginBtn.textContent = '登录';
       } catch (_) {}
-      if (!sessionStorage.getItem('cc_emergency_reset')) {
-        sessionStorage.setItem('cc_emergency_reset', '1');
-        location.reload();
-      } else {
-        // 已经 reload 过一次还是死，就不再 reload 防循环，强行露出登录页。
-        try {
-          $('#loginOverlay').classList.remove('hidden');
-          $('#loginError').textContent = '启动反复失败，请检查网络或浏览器拦截';
-        } catch (_) {}
-      }
     }, 12000);
     function clearInitWatchdog() {
       if (initWatchdog) { clearTimeout(initWatchdog); initWatchdog = null; }
@@ -929,6 +974,11 @@
       existing = r && r.data ? r.data.session : null;
     } catch (e) {
       console.warn('[init] getSession failed:', e);
+      // getSession 卡死/抛错 = 持久化 session 坏了。光 forceReauth 不够，
+      // supabase 客户端内部那个挂住的 refresh promise 还在，下一次
+      // signInWithPassword 也会被拖垮——hardReset reload 让客户端重建。
+      // reload 过一次还死才落回 in-page 重登。
+      if (hardReset('init/getSession')) return;
       await forceReauth(e.__timeout ? '会话异常已重置，请重新登录' : '会话已重置，请重新登录');
       clearInitWatchdog();
       return;
