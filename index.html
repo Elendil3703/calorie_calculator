@@ -5,8 +5,36 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>卡路里计算器</title>
   <link rel="stylesheet" href="style.css" />
+  <style>
+    /* 会话恢复中遮罩。HTML 默认就显示，确保 first-paint 那一刻就盖住所有界面，
+       app.js 还没跑起来时也阻止用户点登录按钮跟后台 init 抢 auth lock。
+       直接内联在 head 是为了不用碰 style.css 的缓存——也保证就算 style.css
+       因为缓存策略加载得慢，spinner 和 z-index 也已经生效。
+       颜色硬编码也是同样的考虑：不依赖 CSS 变量是否已经解析。 */
+    #initOverlay { z-index: 200; }
+    #initOverlay .init-spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid #e5e7eb;
+      border-top-color: #10b981;
+      border-radius: 50%;
+      animation: init-spin 0.8s linear infinite;
+      margin: 14px auto 0;
+    }
+    @keyframes init-spin { to { transform: rotate(360deg); } }
+  </style>
 </head>
 <body>
+  <!-- 会话恢复中遮罩 — first-paint 起就盖住一切，直到 app.js 走到稳定态
+       (showLogin / hideLogin) 再藏掉。期间任何点击都被这层吃掉。 -->
+  <div id="initOverlay" class="overlay">
+    <div class="overlay-card">
+      <h2>正在恢复会话</h2>
+      <p class="muted">请稍后…</p>
+      <div class="init-spinner" aria-hidden="true"></div>
+    </div>
+  </div>
+
   <!-- 登录遮罩 -->
   <div id="loginOverlay" class="overlay">
     <div class="overlay-card login-card">
@@ -221,6 +249,6 @@
        GH Pages 不发严格的 Cache-Control，浏览器会用启发式缓存策略，
        第二次打开常常直接读磁盘里的老 app.js，让线上 fix 看起来"没生效"。
        每次 app.js 有实质性改动就把版本号往上推一档。 -->
-  <script src="app.js?v=20260519d"></script>
+  <script src="app.js?v=20260519e"></script>
 </body>
 </html>

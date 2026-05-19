@@ -257,7 +257,15 @@
     if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
     showLogin(msg || '会话已过期，请重新登录');
   }
+  // init 期间盖在最上层的"请稍后"遮罩。HTML 默认显示，凡是走到稳定态
+  // (showLogin / hideLogin / 早期错误 return) 都要把它藏掉，否则用户
+  // 一直看到「正在恢复会话」转圈圈。
+  function hideInitOverlay() {
+    const el = document.getElementById('initOverlay');
+    if (el) el.classList.add('hidden');
+  }
   function showLogin(msg) {
+    hideInitOverlay();
     $('#loginOverlay').classList.remove('hidden');
     $('#loginError').textContent = msg || '';
     const last = localStorage.getItem(LAST_LOGIN_KEY);
@@ -274,6 +282,7 @@
     $('#loginPassword').focus();
   }
   function hideLogin() {
+    hideInitOverlay();
     $('#loginOverlay').classList.add('hidden');
     $('#loginPassword').value = '';
   }
@@ -897,11 +906,13 @@
   // ---------- Init ----------
   document.addEventListener('DOMContentLoaded', async () => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-      $('#loginError').textContent = '请先在 app.js 顶部配置 SUPABASE_URL 和 SUPABASE_ANON_KEY';
+      // 早期 return 走 showLogin 而不是只设 loginError 文案——
+      // 否则 init 遮罩盖着登录页，用户根本看不到错误。
+      showLogin('请先在 app.js 顶部配置 SUPABASE_URL 和 SUPABASE_ANON_KEY');
       return;
     }
     if (!window.supabase || !window.supabase.createClient) {
-      $('#loginError').textContent = 'Supabase SDK 加载失败，请检查网络';
+      showLogin('Supabase SDK 加载失败，请检查网络');
       return;
     }
     sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -930,13 +941,9 @@
     // 自己也卡的极端组合都能救回来。
     initWatchdog = setTimeout(() => {
       if (hardReset('init/watchdog 12s')) return;
-      // 已经 reload 过一次还是死，露出登录页让用户手动重试。
-      try {
-        $('#loginOverlay').classList.remove('hidden');
-        $('#loginError').textContent = '启动反复失败，请检查网络或浏览器拦截';
-        loginBtn.disabled = false;
-        loginBtn.textContent = '登录';
-      } catch (_) {}
+      // 已经 reload 过一次还是死，让用户看到登录页手动重试。
+      // showLogin 会一并藏掉 initOverlay 并把按钮放回可点状态。
+      try { showLogin('启动反复失败，请检查网络或浏览器拦截'); } catch (_) {}
     }, 12000);
     function clearInitWatchdog() {
       if (initWatchdog) { clearTimeout(initWatchdog); initWatchdog = null; }
