@@ -201,13 +201,14 @@
 
         <div class="mode-panel hidden" id="mode-ai">
           <label>食物描述
-            <input type="text" id="ai_description" placeholder="如：一碗米饭、两个煎蛋、一份红烧肉" />
+            <input type="text" id="ai_description" placeholder="如：两个鸡腿，50g 巴沙鱼，一些蘑菇" />
           </label>
           <button class="secondary-btn full-width" id="estimateBtn">AI 估算</button>
           <p class="ai-error error-text hidden" id="ai_error"></p>
           <div class="ai-result hidden" id="ai_result">
-            <div class="ai-result-row">
-              <div class="ai-result-name" id="ai_name">--</div>
+            <ul class="ai-items" id="ai_items"></ul>
+            <div class="ai-result-row ai-total hidden" id="ai_total">
+              <div class="ai-result-name">合计</div>
               <div class="ai-result-kcal"><span id="ai_kcal">--</span> 大卡</div>
             </div>
             <p class="muted ai-hint">AI 估算值，仅供参考</p>
@@ -319,6 +320,6 @@
        GH Pages 不发严格的 Cache-Control，浏览器会用启发式缓存策略，
        第二次打开常常直接读磁盘里的老 app.js，让线上 fix 看起来"没生效"。
        每次 app.js 有实质性改动就把版本号往上推一档。 -->
-  <script src="app.js?v=20260519g"></script>
+  <script src="app.js?v=20260519h"></script>
 </body>
 </html>

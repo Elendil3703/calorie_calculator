@@ -23,14 +23,16 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-const SYSTEM_PROMPT = `你是中餐为主的营养估算助手。用户用中文描述吃了什么（例如「一碗米饭」「两个煎蛋」「一份红烧肉」），你估算这份食物的**总**大卡数。
+const SYSTEM_PROMPT = `你是中餐为主的营养估算助手。用户用中文描述吃了什么，可能是单项也可能是多项食物（例如「一碗米饭」、「两个鸡腿，50g 巴沙鱼，一些蘑菇」、「一份红烧肉配米饭」），你需要把描述按每一项独立食物拆开，分别估算每一项的大卡数。
 
 严格按以下规则返回：
 - 只输出一个 JSON 对象，不要任何解释或额外文本
-- 格式：{"name": "<食物名>", "calories": <整数>}
-- name 是规范的食物名称，去掉数量描述（比如「一碗米饭」→「米饭」、「两个煎蛋」→「煎蛋」）
-- calories 必须是一个具体的整数（不要写区间、不要带单位、不要带其他字段），按用户描述的份量估算总量
-- 份量未明确时，按常见家庭单人份估算（如「一碗」「一份」按普通成人份量）
+- 格式：{"items": [{"name": "<含份量的食物名>", "calories": <整数>}, ...]}
+- 即使只有一项食物，items 也必须是数组（长度为 1）
+- 用户描述里的每一项独立食物各占数组中的一项
+- 每项的 name 要保留份量信息并使用自然中文（例如「两个鸡腿」、「50g 巴沙鱼」、「一些蘑菇」、「一碗米饭」），不要拆掉数量
+- 每项的 calories 是该项按用户描述的份量估算出的整数大卡数（不要写区间、不要带单位、不要带其他字段）
+- 份量未明确时（如「一些」「适量」），按常见家庭单人份估算
 - 如果输入不是食物，返回 {"error": "not_food"}`;
 
 serve(async (req) => {
@@ -70,7 +72,9 @@ serve(async (req) => {
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 200,
+        // 多项食物时返回的 JSON 比单项长不少（n 个 {name, calories} + items 包裹），
+        // 200 不够装 5+ 项；600 给 ~15 项留足余量。
+        max_tokens: 600,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: description }],
       }),
@@ -96,7 +100,8 @@ serve(async (req) => {
       }, 502);
     }
 
-    let parsed: { name?: string; calories?: number; error?: string };
+    type RawItem = { name?: unknown; calories?: unknown };
+    let parsed: { items?: RawItem[]; name?: unknown; calories?: unknown; error?: string };
     try {
       parsed = JSON.parse(match[0]);
     } catch (e) {
@@ -110,17 +115,33 @@ serve(async (req) => {
       return json({ error: '看起来不是食物，换个描述试试' }, 400);
     }
 
-    const calories = Math.round(Number(parsed.calories));
-    if (!Number.isFinite(calories) || calories < 0 || calories > 10000) {
+    // 优先吃新格式 {items: [...]}；如果哪天 prompt 漂移回旧的 {name, calories}
+    // 单项格式，也能兜住，整成一项的数组继续往下走。
+    let rawItems: RawItem[] = [];
+    if (Array.isArray(parsed.items)) {
+      rawItems = parsed.items;
+    } else if (parsed.calories != null) {
+      rawItems = [{ name: parsed.name, calories: parsed.calories }];
+    }
+
+    // 单项最长 100 字 + 大卡 [0, 10000]；多项一次最多 20 项（输入有 200 字上限，
+    // 正常没人会写到 20+ 项；超出基本是 AI 幻觉，截断保护下游 UI 和数据库）。
+    const items: { name: string; calories: number }[] = [];
+    for (const it of rawItems.slice(0, 20)) {
+      const cal = Math.round(Number(it?.calories));
+      if (!Number.isFinite(cal) || cal < 0 || cal > 10000) continue;
+      const name = String(it?.name || description).slice(0, 100).trim();
+      if (!name) continue;
+      items.push({ name, calories: cal });
+    }
+    if (items.length === 0) {
       return json({
         error: 'AI 返回数值异常',
         detail: `parsed: ${JSON.stringify(parsed).slice(0, 300)}`,
       }, 502);
     }
 
-    const name = String(parsed.name || description).slice(0, 100);
-
-    return json({ name, calories });
+    return json({ items });
   } catch (e) {
     console.error('Unhandled error:', e);
     const err = e as Error;

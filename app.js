@@ -401,6 +401,24 @@
     if (data.date === currentDate) todayEntries.unshift(data);
     return data;
   }
+  // AI 多项一次性写入。一次 insert 走一次 PostgREST，比循环 addEntry 省 N-1 次 RTT。
+  // 顺手把 AI 返回的顺序也保留——倒着 unshift，让 payloads[0] 落在 todayEntries 最前。
+  async function addEntries(payloads) {
+    if (!payloads || payloads.length === 0) return [];
+    const today = todayStr();
+    const userId = session.user.id;
+    const enriched = payloads.map(p => ({ ...p, date: today, user_id: userId }));
+    const { data, error } = await sb.from('entries').insert(enriched).select();
+    if (error) {
+      if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return null; }
+      alert('添加失败：' + error.message);
+      return null;
+    }
+    for (let i = data.length - 1; i >= 0; i--) {
+      if (data[i].date === currentDate) todayEntries.unshift(data[i]);
+    }
+    return data;
+  }
   async function removeEntry(id) {
     const { error } = await sb.from('entries').delete().eq('id', id);
     if (error) {
@@ -634,6 +652,24 @@
       ? `剩余 ${round1(remaining)} 大卡。`
       : `已超出 ${round1(-remaining)} 大卡。`;
     toast.innerHTML = `已添加 <b>${entry.name}</b>：${round1(entry.calories)} 大卡。今日累计 ${round1(total)} 大卡，${remText}`;
+    toast.classList.remove('hidden');
+    toast.style.background = remaining < 0 ? '#fef2f2' : '#ecfdf5';
+    toast.style.borderColor = remaining < 0 ? '#fecaca' : '#a7f3d0';
+    toast.style.color = remaining < 0 ? '#991b1b' : '#065f46';
+  }
+  // AI 一次性添加多项时的 toast：列名字 + 合计。只有一项时回退到原单项 toast。
+  function showLastEntriesToast(entries) {
+    if (!entries || entries.length === 0) return;
+    if (entries.length === 1) { showLastEntryToast(entries[0]); return; }
+    const total = entriesTotal(todayEntries);
+    const remaining = targetIntake() - total;
+    const itemsKcal = entries.reduce((s, e) => s + Number(e.calories), 0);
+    const names = entries.map(e => e.name).join('、');
+    const toast = $('#lastEntryToast');
+    const remText = remaining >= 0
+      ? `剩余 ${round1(remaining)} 大卡。`
+      : `已超出 ${round1(-remaining)} 大卡。`;
+    toast.innerHTML = `已添加 <b>${entries.length} 项</b>（${names}）共 ${round1(itemsKcal)} 大卡。今日累计 ${round1(total)} 大卡，${remText}`;
     toast.classList.remove('hidden');
     toast.style.background = remaining < 0 ? '#fef2f2' : '#ecfdf5';
     toast.style.borderColor = remaining < 0 ? '#fecaca' : '#a7f3d0';
@@ -891,9 +927,31 @@
   function resetAiPanel() {
     aiEstimate = null;
     $('#ai_result').classList.add('hidden');
+    $('#ai_items').innerHTML = '';
+    $('#ai_total').classList.add('hidden');
     $('#addAiBtn').classList.add('hidden');
     $('#ai_error').classList.add('hidden');
     $('#ai_error').textContent = '';
+  }
+  function renderAiItems(items) {
+    const ul = $('#ai_items');
+    ul.innerHTML = '';
+    for (const it of items) {
+      const li = document.createElement('li');
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = it.name;
+      const kcal = document.createElement('span');
+      kcal.className = 'kcal';
+      kcal.textContent = round1(it.calories);
+      li.appendChild(name);
+      li.appendChild(kcal);
+      ul.appendChild(li);
+    }
+    // 只有一项时合计行是冗余的，藏起来；两项及以上才显示。
+    const total = items.reduce((s, it) => s + Number(it.calories), 0);
+    $('#ai_kcal').textContent = round1(total);
+    $('#ai_total').classList.toggle('hidden', items.length < 2);
   }
   function showAiError(msg) {
     aiEstimate = null;
@@ -933,13 +991,22 @@
         console.error('estimate-calories failed:', msg, detail);
         return;
       }
-      if (!data || typeof data.calories !== 'number') {
+      // 新格式 {items: [{name, calories}, ...]}；如果 edge function 还没更新，
+      // 旧格式 {name, calories} 也能升级成单元素数组继续走。
+      let items = null;
+      if (data && Array.isArray(data.items)) {
+        items = data.items
+          .filter(it => it && typeof it.name === 'string' && typeof it.calories === 'number' && it.calories >= 0)
+          .map(it => ({ name: it.name, calories: round1(it.calories) }));
+      } else if (data && typeof data.calories === 'number') {
+        items = [{ name: data.name || description, calories: round1(data.calories) }];
+      }
+      if (!items || items.length === 0) {
         showAiError('AI 返回格式异常: ' + JSON.stringify(data).slice(0, 200));
         return;
       }
-      aiEstimate = { name: data.name || description, calories: round1(data.calories) };
-      $('#ai_name').textContent = aiEstimate.name;
-      $('#ai_kcal').textContent = round1(aiEstimate.calories);
+      aiEstimate = { items };
+      renderAiItems(items);
       $('#ai_result').classList.remove('hidden');
       $('#addAiBtn').classList.remove('hidden');
     } catch (e) {
@@ -950,25 +1017,26 @@
     }
   }
   async function handleAddAi() {
-    if (!aiEstimate) return;
+    if (!aiEstimate || !aiEstimate.items || aiEstimate.items.length === 0) return;
     const btn = $('#addAiBtn');
     btn.disabled = true;
     const old = btn.textContent;
     btn.textContent = '添加中…';
-    const entry = await addEntry({
-      name: aiEstimate.name,
-      calories: aiEstimate.calories,
+    const payloads = aiEstimate.items.map(it => ({
+      name: it.name,
+      calories: it.calories,
       mode: 'ai',
       detail: 'AI 估算',
-    });
+    }));
+    const entries = await addEntries(payloads);
     btn.disabled = false;
     btn.textContent = old;
-    if (entry) {
+    if (entries && entries.length > 0) {
       $('#ai_description').value = '';
       resetAiPanel();
       $('#ai_description').focus();
       renderToday();
-      showLastEntryToast(entry);
+      showLastEntriesToast(entries);
     }
   }
 
