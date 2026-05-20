@@ -168,6 +168,14 @@
     const [, m, d] = dateStr.split('-').map(Number);
     return `${m}/${d}`;
   }
+  // 把 created_at（ISO timestamptz）格式化成本地 HH:MM，用于今日记录显示「添加时间」。
+  // 老数据如果没有 created_at 或无法解析，返回空字符串。
+  function formatTime(ts) {
+    if (!ts) return '';
+    const dt = new Date(ts);
+    if (isNaN(dt.getTime())) return '';
+    return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+  }
   function round1(n) { return Math.round(n * 10) / 10; }
   function $(sel) { return document.querySelector(sel); }
   function $$(sel) { return document.querySelectorAll(sel); }
@@ -546,7 +554,11 @@
       name.textContent = e.name;
       const detail = document.createElement('div');
       detail.className = 'detail';
-      detail.textContent = e.detail || '';
+      const time = formatTime(e.created_at);
+      const detailParts = [];
+      if (e.detail) detailParts.push(e.detail);
+      if (time) detailParts.push(time);
+      detail.textContent = detailParts.join(' · ');
       left.appendChild(name);
       left.appendChild(detail);
 
