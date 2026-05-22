@@ -217,10 +217,11 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; padding-bottom: 40px; }
 }
 .mode-btn {
   flex: 1;
+  min-width: 0;
   background: transparent;
   border: none;
-  padding: 8px 4px;
-  font-size: 12.5px;
+  padding: 8px 2px;
+  font-size: 12px;
   color: var(--muted);
   cursor: pointer;
   border-radius: 8px;
@@ -229,28 +230,6 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; padding-bottom: 40px; }
   white-space: nowrap;
 }
 .mode-btn.active { background: var(--card); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
-
-/* Sub switch — used inside quantity mode for source 自定义/从冰箱选择 */
-.sub-switch {
-  display: flex;
-  background: #f3f4f6;
-  border-radius: 8px;
-  padding: 2px;
-  margin-bottom: 12px;
-}
-.sub-btn {
-  flex: 1;
-  background: transparent;
-  border: none;
-  padding: 6px 4px;
-  font-size: 12px;
-  color: var(--muted);
-  cursor: pointer;
-  border-radius: 6px;
-  font-family: inherit;
-  white-space: nowrap;
-}
-.sub-btn.active { background: var(--card); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
 
 .fridge-pick-info {
   background: #f9fafb;
@@ -489,35 +468,74 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 
 .chart {
   display: flex;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 4px;
-  height: 140px;
+  height: 180px;
   padding: 0 4px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+  position: relative;
 }
-.chart .bar {
+/* 目标基准线（=0 差额） */
+.chart::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+.chart .bar-slot {
   flex: 1;
-  background: var(--primary);
-  border-radius: 4px 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+}
+.chart .bar-half {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+}
+.chart .bar-half.pos { align-items: flex-end; }
+.chart .bar-half.neg { align-items: flex-start; }
+.chart .bar {
+  width: 100%;
   min-height: 2px;
   position: relative;
   transition: background 0.15s;
 }
-.chart .bar.over { background: var(--danger); }
-.chart .bar.empty { background: #e5e7eb; }
-.chart .bar .bar-label {
+.chart .bar-half.pos .bar {
+  background: var(--danger);
+  border-radius: 4px 4px 0 0;
+}
+.chart .bar-half.neg .bar {
+  background: var(--primary);
+  border-radius: 0 0 4px 4px;
+}
+.chart .bar-slot .bar-label {
   position: absolute;
-  bottom: -18px;
+  bottom: -20px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 9px;
   color: var(--muted);
   white-space: nowrap;
 }
-.chart .bar .bar-value {
+.chart .bar-half.pos .bar .bar-value {
   position: absolute;
   top: -16px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.chart .bar-half.neg .bar .bar-value {
+  position: absolute;
+  bottom: -16px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 10px;
@@ -537,6 +555,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .history-list .date { color: var(--muted); }
 .history-list .total { font-weight: 600; }
 .history-list .total.over { color: var(--danger); }
+.history-list .total.under { color: var(--primary); }
 
 /* User picker overlay */
 .overlay {

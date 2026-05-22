@@ -118,12 +118,35 @@
       <div class="card">
         <h3>添加食物</h3>
         <div class="mode-switch">
-          <button class="mode-btn active" data-mode="direct">直接输入</button>
-          <button class="mode-btn" data-mode="quantity">按重量/体积</button>
+          <button class="mode-btn active" data-mode="fridge">从冰箱选择</button>
           <button class="mode-btn" data-mode="ai">AI 估算</button>
+          <button class="mode-btn" data-mode="direct">直接输入</button>
+          <button class="mode-btn" data-mode="quantity">按重量/体积</button>
         </div>
 
-        <div class="mode-panel" id="mode-direct">
+        <div class="mode-panel" id="mode-fridge">
+          <label>选择食物
+            <select id="q_fridge_item">
+              <option value="">（冰箱里没有食物）</option>
+            </select>
+          </label>
+          <div class="fridge-pick-info muted" id="q_fridge_info">先选一项冰箱里的食物</div>
+          <div class="row">
+            <label class="flex">摄入量
+              <input type="number" id="q_fridge_amount" inputmode="decimal" />
+            </label>
+            <label>单位
+              <select id="q_fridge_unit">
+                <option value="g">克 (g)</option>
+                <option value="ml">毫升 (ml)</option>
+              </select>
+            </label>
+          </div>
+          <div class="preview" id="fridge_preview">≈ 0 大卡</div>
+          <button class="primary-btn" id="addFridgeEntryBtn">添加</button>
+        </div>
+
+        <div class="mode-panel hidden" id="mode-direct">
           <label>食物名称 <span class="optional">（选填）</span>
             <input type="text" id="d_name" />
           </label>
@@ -142,59 +165,31 @@
         </div>
 
         <div class="mode-panel hidden" id="mode-quantity">
-          <div class="sub-switch">
-            <button class="sub-btn active" data-source="custom">自定义</button>
-            <button class="sub-btn" data-source="fridge">从冰箱选择</button>
-          </div>
-
-          <div class="quantity-source" id="q-source-custom">
-            <label>食物名称 <span class="optional">（选填）</span>
-              <input type="text" id="q_name" />
+          <label>食物名称 <span class="optional">（选填）</span>
+            <input type="text" id="q_name" />
+          </label>
+          <div class="row">
+            <label class="flex">摄入量
+              <input type="number" id="q_amount" inputmode="decimal" />
             </label>
-            <div class="row">
-              <label class="flex">摄入量
-                <input type="number" id="q_amount" inputmode="decimal" />
-              </label>
-              <label>单位
-                <select id="q_unit">
-                  <option value="g">克 (g)</option>
-                  <option value="ml">毫升 (ml)</option>
-                </select>
-              </label>
-            </div>
-            <div class="row">
-              <label class="flex">每 100 <span id="q_per_unit">克</span> 含
-                <input type="number" id="q_per100" inputmode="decimal" />
-              </label>
-              <label>单位
-                <select id="q_energy_unit">
-                  <option value="kcal">大卡 (kcal)</option>
-                  <option value="kj">千焦 (kJ)</option>
-                </select>
-              </label>
-            </div>
-          </div>
-
-          <div class="quantity-source hidden" id="q-source-fridge">
-            <label>选择食物
-              <select id="q_fridge_item">
-                <option value="">（冰箱里没有食物）</option>
+            <label>单位
+              <select id="q_unit">
+                <option value="g">克 (g)</option>
+                <option value="ml">毫升 (ml)</option>
               </select>
             </label>
-            <div class="fridge-pick-info muted" id="q_fridge_info">先选一项冰箱里的食物</div>
-            <div class="row">
-              <label class="flex">摄入量
-                <input type="number" id="q_fridge_amount" inputmode="decimal" />
-              </label>
-              <label>单位
-                <select id="q_fridge_unit">
-                  <option value="g">克 (g)</option>
-                  <option value="ml">毫升 (ml)</option>
-                </select>
-              </label>
-            </div>
           </div>
-
+          <div class="row">
+            <label class="flex">每 100 <span id="q_per_unit">克</span> 含
+              <input type="number" id="q_per100" inputmode="decimal" />
+            </label>
+            <label>单位
+              <select id="q_energy_unit">
+                <option value="kcal">大卡 (kcal)</option>
+                <option value="kj">千焦 (kJ)</option>
+              </select>
+            </label>
+          </div>
           <div class="preview" id="q_preview">≈ 0 大卡</div>
           <button class="primary-btn" id="addQuantityBtn">添加</button>
         </div>
@@ -320,6 +315,6 @@
        GH Pages 不发严格的 Cache-Control，浏览器会用启发式缓存策略，
        第二次打开常常直接读磁盘里的老 app.js，让线上 fix 看起来"没生效"。
        每次 app.js 有实质性改动就把版本号往上推一档。 -->
-  <script src="app.js?v=20260519h"></script>
+  <script src="app.js?v=20260523b"></script>
 </body>
 </html>

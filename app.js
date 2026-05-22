@@ -45,7 +45,7 @@
   let todayEntries = [];
   let historyData = {};
   let statsRange = 'week';
-  let inputMode = 'direct';
+  let inputMode = 'fridge';
   let midnightTimer = null;
   let currentDate = null;
   let aiEstimate = null;
@@ -53,8 +53,6 @@
   let fridgeItems = [];
   // null = 添加模式；非 null = 正在编辑那一项 id
   let editingFridgeId = null;
-  // 按重量/体积模式下的来源：'custom'（自定义输入）或 'fridge'（从冰箱选）
-  let quantitySource = 'custom';
   // 启动兜底定时器：12s 内 init 没走到稳定态就 hardReset。提到模块作用域，
   // 让 hardReset 能从任意路径里清掉它，不只是 DOMContentLoaded 内部。
   let initWatchdog = null;
@@ -177,6 +175,11 @@
     return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
   }
   function round1(n) { return Math.round(n * 10) / 10; }
+  function formatSignedKcal(v) {
+    const r = round1(v);
+    if (r === 0) return '0';
+    return r > 0 ? `+${r}` : `${r}`;
+  }
   function $(sel) { return document.querySelector(sel); }
   function $$(sel) { return document.querySelectorAll(sel); }
 
@@ -655,6 +658,7 @@
       sel.value = prev;
     }
     updateFridgePickerInfo();
+    updateFridgePreview();
   }
   function showLastEntryToast(entry) {
     const total = entriesTotal(todayEntries);
@@ -700,39 +704,56 @@
       const total = dateStr === today ? todayTotal : (historyData[dateStr] || 0);
       series.push({ date: dateStr, total });
     }
-    // 日均/超额天数只统计到前一天，今天可能还没填完
+    // 日均盈亏/超额天数只统计到前一天，今天可能还没填完
     const pastSeries = series.filter(s => s.date !== today);
     const pastNonZero = pastSeries.filter(s => s.total > 0);
-    const sum = pastNonZero.reduce((a, b) => a + b.total, 0);
-    const avg = pastNonZero.length ? sum / pastNonZero.length : 0;
-    const max = series.reduce((a, b) => Math.max(a, b.total), 0);
+    const avgDiff = pastNonZero.length
+      ? pastNonZero.reduce((a, b) => a + (b.total - target), 0) / pastNonZero.length
+      : 0;
     const overCount = pastSeries.filter(s => s.total > target).length;
     $('#statsSummary').innerHTML = `
-      <div class="item"><div class="num">${round1(avg)}</div><div class="lab">日均 (有记录)</div></div>
+      <div class="item"><div class="num">${formatSignedKcal(avgDiff)}</div><div class="lab">日均盈亏 (有记录)</div></div>
       <div class="item"><div class="num">${overCount}</div><div class="lab">超额天数</div></div>
     `;
 
     const chart = $('#chart');
     chart.innerHTML = '';
-    const maxScale = Math.max(max, target, 1) * 1.1;
+    // 以最大 |差额| 为半轴标尺；没数据时退化到 target*0.2 防 0 除
+    const maxAbsDiff = series
+      .filter(s => s.total > 0)
+      .reduce((a, b) => Math.max(a, Math.abs(b.total - target)), 0);
+    const maxScale = (maxAbsDiff || Math.max(target * 0.2, 1)) * 1.1;
     for (const s of series) {
-      const bar = document.createElement('div');
-      bar.className = 'bar';
-      if (s.total === 0) bar.classList.add('empty');
-      else if (s.total > target) bar.classList.add('over');
-      bar.style.height = (s.total > 0 ? (s.total / maxScale) * 100 : 1) + '%';
+      const slot = document.createElement('div');
+      slot.className = 'bar-slot';
+      const posHalf = document.createElement('div');
+      posHalf.className = 'bar-half pos';
+      const negHalf = document.createElement('div');
+      negHalf.className = 'bar-half neg';
+      const recorded = s.total > 0;
+      if (recorded) {
+        const diff = s.total - target;
+        const bar = document.createElement('div');
+        bar.className = 'bar ' + (diff >= 0 ? 'over' : 'under');
+        const heightPct = Math.min(100, Math.abs(diff) / maxScale * 100);
+        bar.style.height = Math.max(2, heightPct) + '%';
+        bar.title = `${s.date}: ${formatSignedKcal(diff)} 大卡`;
+        if (days <= 7) {
+          const val = document.createElement('span');
+          val.className = 'bar-value';
+          val.textContent = formatSignedKcal(diff);
+          bar.appendChild(val);
+        }
+        if (diff >= 0) posHalf.appendChild(bar);
+        else negHalf.appendChild(bar);
+      }
       const lab = document.createElement('span');
       lab.className = 'bar-label';
       lab.textContent = formatDateShort(s.date);
-      bar.appendChild(lab);
-      if (s.total > 0 && days <= 7) {
-        const val = document.createElement('span');
-        val.className = 'bar-value';
-        val.textContent = round1(s.total);
-        bar.appendChild(val);
-      }
-      bar.title = `${s.date}: ${round1(s.total)} 大卡`;
-      chart.appendChild(bar);
+      slot.appendChild(posHalf);
+      slot.appendChild(negHalf);
+      slot.appendChild(lab);
+      chart.appendChild(slot);
     }
 
     const list = $('#historyList');
@@ -751,9 +772,13 @@
         const dateSpan = document.createElement('span');
         dateSpan.className = 'date';
         dateSpan.textContent = formatDateLong(s.date);
+        const diff = s.total - target;
         const totalSpan = document.createElement('span');
-        totalSpan.className = 'total' + (s.total > target ? ' over' : '');
-        totalSpan.textContent = `${round1(s.total)} 大卡`;
+        let cls = 'total';
+        if (diff > 0) cls += ' over';
+        else if (diff < 0) cls += ' under';
+        totalSpan.className = cls;
+        totalSpan.textContent = `${formatSignedKcal(diff)} 大卡`;
         li.appendChild(dateSpan);
         li.appendChild(totalSpan);
         list.appendChild(li);
@@ -798,50 +823,54 @@
   }
   async function handleAddQuantity() {
     const btn = $('#addQuantityBtn');
-    let payload;
-    if (quantitySource === 'fridge') {
-      const item = getSelectedFridgeItem();
-      if (!item) { alert('请先选择冰箱里的食物'); return; }
-      const amount = parseFloat($('#q_fridge_amount').value);
-      if (!isFinite(amount) || amount <= 0) { alert('请输入有效摄入量'); return; }
-      let kcal, detail;
-      if (item.basis === 'per_serving') {
-        kcal = amount * Number(item.kcal);
-        detail = `${round1(amount)} 份 × ${round1(item.kcal)} 大卡/份 · 来自冰箱`;
-      } else {
-        const unit = $('#q_fridge_unit').value;
-        kcal = (amount / 100) * Number(item.kcal);
-        detail = `${round1(amount)}${unit} × ${round1(item.kcal)} 大卡/100${unit} · 来自冰箱`;
-      }
-      payload = { name: item.name, calories: round1(kcal), mode: 'quantity', detail };
-    } else {
-      const name = $('#q_name').value.trim() || '未命名';
-      const amount = parseFloat($('#q_amount').value);
-      const unit = $('#q_unit').value;
-      const per100 = parseFloat($('#q_per100').value);
-      const energyUnit = $('#q_energy_unit').value;
-      if (!isFinite(amount) || amount <= 0) { alert('请输入有效摄入量'); return; }
-      if (!isFinite(per100) || per100 < 0) { alert('请输入每 100 单位的能量值'); return; }
-      const per100Kcal = energyUnit === 'kj' ? per100 * KJ_TO_KCAL : per100;
-      const kcal = (amount / 100) * per100Kcal;
-      const energyLabel = energyUnit === 'kj' ? '千焦' : '大卡';
-      const detail = `${round1(amount)}${unit} × ${round1(per100)} ${energyLabel}/100${unit}`;
-      payload = { name, calories: round1(kcal), mode: 'quantity', detail };
-    }
+    const name = $('#q_name').value.trim() || '未命名';
+    const amount = parseFloat($('#q_amount').value);
+    const unit = $('#q_unit').value;
+    const per100 = parseFloat($('#q_per100').value);
+    const energyUnit = $('#q_energy_unit').value;
+    if (!isFinite(amount) || amount <= 0) { alert('请输入有效摄入量'); return; }
+    if (!isFinite(per100) || per100 < 0) { alert('请输入每 100 单位的能量值'); return; }
+    const per100Kcal = energyUnit === 'kj' ? per100 * KJ_TO_KCAL : per100;
+    const kcal = (amount / 100) * per100Kcal;
+    const energyLabel = energyUnit === 'kj' ? '千焦' : '大卡';
+    const detail = `${round1(amount)}${unit} × ${round1(per100)} ${energyLabel}/100${unit}`;
+    const payload = { name, calories: round1(kcal), mode: 'quantity', detail };
     btn.disabled = true; const old = btn.textContent; btn.textContent = '添加中…';
     const entry = await addEntry(payload);
     btn.disabled = false; btn.textContent = old;
     if (entry) {
-      if (quantitySource === 'fridge') {
-        $('#q_fridge_amount').value = '';
-      } else {
-        $('#q_name').value = '';
-        $('#q_amount').value = '';
-        $('#q_per100').value = '';
-      }
+      $('#q_name').value = '';
+      $('#q_amount').value = '';
+      $('#q_per100').value = '';
       updateQuantityPreview();
-      if (quantitySource === 'fridge') $('#q_fridge_amount').focus();
-      else $('#q_name').focus();
+      $('#q_name').focus();
+      renderToday();
+      showLastEntryToast(entry);
+    }
+  }
+  async function handleAddFromFridge() {
+    const btn = $('#addFridgeEntryBtn');
+    const item = getSelectedFridgeItem();
+    if (!item) { alert('请先选择冰箱里的食物'); return; }
+    const amount = parseFloat($('#q_fridge_amount').value);
+    if (!isFinite(amount) || amount <= 0) { alert('请输入有效摄入量'); return; }
+    let kcal, detail;
+    if (item.basis === 'per_serving') {
+      kcal = amount * Number(item.kcal);
+      detail = `${round1(amount)} 份 × ${round1(item.kcal)} 大卡/份 · 来自冰箱`;
+    } else {
+      const unit = $('#q_fridge_unit').value;
+      kcal = (amount / 100) * Number(item.kcal);
+      detail = `${round1(amount)}${unit} × ${round1(item.kcal)} 大卡/100${unit} · 来自冰箱`;
+    }
+    const payload = { name: item.name, calories: round1(kcal), mode: 'quantity', detail };
+    btn.disabled = true; const old = btn.textContent; btn.textContent = '添加中…';
+    const entry = await addEntry(payload);
+    btn.disabled = false; btn.textContent = old;
+    if (entry) {
+      $('#q_fridge_amount').value = '';
+      updateFridgePreview();
+      $('#q_fridge_amount').focus();
       renderToday();
       showLastEntryToast(entry);
     }
@@ -1053,18 +1082,6 @@
   }
 
   function updateQuantityPreview() {
-    if (quantitySource === 'fridge') {
-      const item = getSelectedFridgeItem();
-      const amount = parseFloat($('#q_fridge_amount').value);
-      if (item && isFinite(amount) && amount > 0) {
-        const k = Number(item.kcal);
-        const kcal = item.basis === 'per_serving' ? amount * k : (amount / 100) * k;
-        $('#q_preview').textContent = `≈ ${round1(kcal)} 大卡`;
-      } else {
-        $('#q_preview').textContent = '≈ 0 大卡';
-      }
-      return;
-    }
     const amount = parseFloat($('#q_amount').value);
     const per100 = parseFloat($('#q_per100').value);
     const unit = $('#q_unit').value;
@@ -1076,6 +1093,17 @@
       $('#q_preview').textContent = `≈ ${round1(kcal)} 大卡`;
     } else {
       $('#q_preview').textContent = '≈ 0 大卡';
+    }
+  }
+  function updateFridgePreview() {
+    const item = getSelectedFridgeItem();
+    const amount = parseFloat($('#q_fridge_amount').value);
+    if (item && isFinite(amount) && amount > 0) {
+      const k = Number(item.kcal);
+      const kcal = item.basis === 'per_serving' ? amount * k : (amount / 100) * k;
+      $('#fridge_preview').textContent = `≈ ${round1(kcal)} 大卡`;
+    } else {
+      $('#fridge_preview').textContent = '≈ 0 大卡';
     }
   }
 
@@ -1108,6 +1136,7 @@
         $$('.mode-btn').forEach(x => x.classList.remove('active'));
         b.classList.add('active');
         inputMode = b.dataset.mode;
+        $('#mode-fridge').classList.toggle('hidden', inputMode !== 'fridge');
         $('#mode-direct').classList.toggle('hidden', inputMode !== 'direct');
         $('#mode-quantity').classList.toggle('hidden', inputMode !== 'quantity');
         $('#mode-ai').classList.toggle('hidden', inputMode !== 'ai');
@@ -1123,26 +1152,17 @@
     });
     $('#addDirectBtn').addEventListener('click', handleAddDirect);
     $('#addQuantityBtn').addEventListener('click', handleAddQuantity);
+    $('#addFridgeEntryBtn').addEventListener('click', handleAddFromFridge);
     ['q_amount', 'q_per100', 'q_unit', 'q_energy_unit'].forEach(id => {
       $('#' + id).addEventListener('input', updateQuantityPreview);
       $('#' + id).addEventListener('change', updateQuantityPreview);
     });
-    $$('.sub-btn').forEach(b => {
-      b.addEventListener('click', () => {
-        $$('.sub-btn').forEach(x => x.classList.remove('active'));
-        b.classList.add('active');
-        quantitySource = b.dataset.source;
-        $('#q-source-custom').classList.toggle('hidden', quantitySource !== 'custom');
-        $('#q-source-fridge').classList.toggle('hidden', quantitySource !== 'fridge');
-        updateQuantityPreview();
-      });
-    });
     $('#q_fridge_item').addEventListener('change', () => {
       updateFridgePickerInfo();
-      updateQuantityPreview();
+      updateFridgePreview();
     });
-    $('#q_fridge_amount').addEventListener('input', updateQuantityPreview);
-    $('#q_fridge_unit').addEventListener('change', updateQuantityPreview);
+    $('#q_fridge_amount').addEventListener('input', updateFridgePreview);
+    $('#q_fridge_unit').addEventListener('change', updateFridgePreview);
 
     $('#addFridgeBtn').addEventListener('click', handleAddOrSaveFridge);
     $('#cancelFridgeEditBtn').addEventListener('click', () => resetFridgeForm());
