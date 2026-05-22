@@ -694,23 +694,20 @@
   function renderStats() {
     const days = statsRange === 'week' ? 7 : 30;
     const target = targetIntake();
-    const todayTotal = entriesTotal(todayEntries);
-    const today = todayStr();
+    // 统计区间一律不含今天：循环从 i=days 取到 i=1（即昨天起向前 days 天）
     const series = [];
-    for (let i = days - 1; i >= 0; i--) {
+    for (let i = days; i >= 1; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      const total = dateStr === today ? todayTotal : (historyData[dateStr] || 0);
+      const total = historyData[dateStr] || 0;
       series.push({ date: dateStr, total });
     }
-    // 日均盈亏/超额天数只统计到前一天，今天可能还没填完
-    const pastSeries = series.filter(s => s.date !== today);
-    const pastNonZero = pastSeries.filter(s => s.total > 0);
-    const avgDiff = pastNonZero.length
-      ? pastNonZero.reduce((a, b) => a + (b.total - target), 0) / pastNonZero.length
+    const recordedSeries = series.filter(s => s.total > 0);
+    const avgDiff = recordedSeries.length
+      ? recordedSeries.reduce((a, b) => a + (b.total - target), 0) / recordedSeries.length
       : 0;
-    const overCount = pastSeries.filter(s => s.total > target).length;
+    const overCount = series.filter(s => s.total > target).length;
     $('#statsSummary').innerHTML = `
       <div class="item"><div class="num">${formatSignedKcal(avgDiff)}</div><div class="lab">日均盈亏 (有记录)</div></div>
       <div class="item"><div class="num">${overCount}</div><div class="lab">超额天数</div></div>
