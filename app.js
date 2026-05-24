@@ -915,7 +915,7 @@
     $('#f_name').value = '';
     $('#f_kcal').value = '';
     $('#f_unit').value = 'kj';
-    $('#f_basis').value = 'per_100g';
+    $('#f_basis').value = 'per_serving';
     $('#f_expiry').value = '';
   }
   function enterFridgeEdit(item) {
