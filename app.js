@@ -914,7 +914,7 @@
     $('#cancelFridgeEditBtn').classList.add('hidden');
     $('#f_name').value = '';
     $('#f_kcal').value = '';
-    $('#f_unit').value = 'kcal';
+    $('#f_unit').value = 'kj';
     $('#f_basis').value = 'per_100g';
     $('#f_expiry').value = '';
   }
