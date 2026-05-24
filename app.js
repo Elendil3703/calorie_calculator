@@ -19,7 +19,7 @@
   // CJ 的 BMR 1900 来自手表实测；Katrina 1358 由 Mifflin-St Jeor 公式算得。
   const USER_PROFILES = {
     cj:      { gender: '男', age: 22, height: 176, weight: 79, bmr: 1900, exercise: 800 },
-    katrina: { gender: '女', age: 25, height: 167, weight: 60, bmr: 1358, exercise: 200 },
+    katrina: { gender: '女', age: 25, height: 167, weight: 60, bmr: 1358, exercise: 350 },
   };
   const EMAIL_TO_USER = {};
   const EMAIL_TO_KEY = {};
