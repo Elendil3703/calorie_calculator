@@ -45,6 +45,23 @@ alter table public.daily_exercise enable row level security;
 create policy "daily_exercise_own" on public.daily_exercise
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
+-- 每日 deficit 快照。settings.threshold 只保留"当前值"，无法回溯历史，
+-- 所以单开一张表，每次进入 app / 改 deficit 时给当天 upsert 一行。
+-- 没行的日子，统计页按"无记录"处理（不能用当前 settings.threshold 回填，
+-- 因为那等于把今天的设定追溯到过去，正是这次修复要避免的事）。
+create table public.daily_deficit (
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  date       date not null,
+  kcal       numeric not null,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, date)
+);
+
+alter table public.daily_deficit enable row level security;
+
+create policy "daily_deficit_own" on public.daily_deficit
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
 -- 我的冰箱：用户自己维护的食物清单，作为「按重量/体积」录入时的能量参考。
 -- kcal 字段一律存大卡（kJ 在前端入库前换算），basis 决定它是 "每 100g/ml" 还是 "每份"。
 create table public.fridge_items (

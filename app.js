@@ -44,6 +44,11 @@
   let dailyExercise = 0;
   let todayEntries = [];
   let historyData = {};
+  // 过去 30 天的 daily_exercise 快照（没行 = 当天用 profile.exercise 默认值）。
+  let historyExercise = {};
+  // 过去 30 天的 daily_deficit 快照。没行 = 那一天没快照，
+  // 统计页要按"无记录"处理——别拿当前 deficit 回填历史。
+  let historyDeficit = {};
   let statsRange = 'week';
   let inputMode = 'fridge';
   let midnightTimer = null;
@@ -121,6 +126,28 @@
       if (isAuthError(e)) { await forceReauth('会话已过期，请重新登录'); }
     }
   }
+  // 每日 deficit：和 daily_exercise 同模式，但语义不同——没行不能 fallback 到
+  // settings.threshold，因为那只是"现在"的值。历史天没行就当作没快照、统计页跳过。
+  async function saveDailyDeficitToDb(date, value) {
+    if (!session) return;
+    try {
+      const { error } = await withTimeout(
+        sb.from('daily_deficit').upsert({
+          user_id: session.user.id,
+          date,
+          kcal: value,
+          updated_at: new Date().toISOString(),
+        }),
+        6000,
+        'saveDailyDeficit'
+      );
+      if (error) throw error;
+    } catch (e) {
+      console.warn('[saveDailyDeficit] failed:', e);
+      if (isAuthError(e)) { await forceReauth('会话已过期，请重新登录'); }
+    }
+  }
+
   // 把还在防抖窗口里的待写值立刻冲到库里。失焦/关闭/切走时用。
   function flushPendingExerciseSave() {
     if (exerciseSaveTimer) {
@@ -384,6 +411,39 @@
       historyData[row.date] = (historyData[row.date] || 0) + Number(row.calories);
     }
 
+    // 拉历史 daily_exercise / daily_deficit 快照。表可能还没建好（新 schema），
+    // 错误吞掉走默认值，整体 loadAll 不挂。
+    historyExercise = {};
+    historyDeficit = {};
+    try {
+      const { data: hex, error: e4 } = await withTimeout(
+        sb.from('daily_exercise').select('date, kcal').gte('date', startStr).lt('date', currentDate),
+        8000,
+        'loadAll/historyExercise'
+      );
+      if (e4) throw e4;
+      for (const row of (hex || [])) historyExercise[row.date] = Number(row.kcal);
+    } catch (e) {
+      console.warn('[loadAll] historyExercise failed:', e);
+    }
+    try {
+      const { data: hdf, error: e5 } = await withTimeout(
+        sb.from('daily_deficit').select('date, kcal').gte('date', startStr).lte('date', currentDate),
+        8000,
+        'loadAll/historyDeficit'
+      );
+      if (e5) throw e5;
+      for (const row of (hdf || [])) historyDeficit[row.date] = Number(row.kcal);
+    } catch (e) {
+      console.warn('[loadAll] historyDeficit failed:', e);
+    }
+
+    // 给今天 upsert 一个 deficit 快照，覆盖最新设定。改 deficit 也会走 saveDeficit 再写一次。
+    if (historyDeficit[currentDate] !== deficit) {
+      historyDeficit[currentDate] = deficit;
+      saveDailyDeficitToDb(currentDate, deficit);
+    }
+
     // fridge_items 表如果还没在 Supabase 里建好，PostgREST 会回 PGRST205/42P01。
     // 那时整个 loadAll 不应该挂掉——其余功能（今日/统计）都能继续用。
     try {
@@ -452,6 +512,9 @@
       return false;
     }
     deficit = value;
+    // 同步写一份当天的 daily_deficit 快照，让统计页今天起对得上。
+    historyDeficit[currentDate] = value;
+    saveDailyDeficitToDb(currentDate, value);
     return true;
   }
 
@@ -693,21 +756,35 @@
   }
   function renderStats() {
     const days = statsRange === 'week' ? 7 : 30;
-    const target = targetIntake();
+    const bmr = profile ? profile.bmr : 0;
+    const defaultExercise = profile ? profile.exercise : 0;
     // 统计区间一律不含今天：循环从 i=days 取到 i=1（即昨天起向前 days 天）
+    // 每一天的目标用当天的快照算：BMR + 当天运动 − 当天 deficit。
+    // 当天没有 daily_deficit 快照 ⇒ 没法算目标，按"无记录"跳过（哪怕 entries 有数据）。
     const series = [];
     for (let i = days; i >= 1; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
       const total = historyData[dateStr] || 0;
-      series.push({ date: dateStr, total });
+      const dDeficit = historyDeficit[dateStr];
+      const hasDeficit = dDeficit != null && isFinite(dDeficit);
+      const dExercise = historyExercise[dateStr] != null ? historyExercise[dateStr] : defaultExercise;
+      const target = hasDeficit ? (bmr + dExercise - dDeficit) : null;
+      const recorded = total > 0 && hasDeficit;
+      series.push({
+        date: dateStr,
+        total,
+        target,
+        diff: recorded ? (total - target) : null,
+        recorded,
+      });
     }
-    const recordedSeries = series.filter(s => s.total > 0);
+    const recordedSeries = series.filter(s => s.recorded);
     const avgDiff = recordedSeries.length
-      ? recordedSeries.reduce((a, b) => a + (b.total - target), 0) / recordedSeries.length
+      ? recordedSeries.reduce((a, b) => a + b.diff, 0) / recordedSeries.length
       : 0;
-    const overCount = series.filter(s => s.total > target).length;
+    const overCount = recordedSeries.filter(s => s.diff > 0).length;
     $('#statsSummary').innerHTML = `
       <div class="item"><div class="num">${formatSignedKcal(avgDiff)}</div><div class="lab">日均盈亏 (有记录)</div></div>
       <div class="item"><div class="num">${overCount}</div><div class="lab">超额天数</div></div>
@@ -715,11 +792,11 @@
 
     const chart = $('#chart');
     chart.innerHTML = '';
-    // 以最大 |差额| 为半轴标尺；没数据时退化到 target*0.2 防 0 除
-    const maxAbsDiff = series
-      .filter(s => s.total > 0)
-      .reduce((a, b) => Math.max(a, Math.abs(b.total - target)), 0);
-    const maxScale = (maxAbsDiff || Math.max(target * 0.2, 1)) * 1.1;
+    // 以最大 |差额| 为半轴标尺；没数据时退化到 当前 target*0.2 防 0 除
+    const fallbackScale = Math.max(targetIntake() * 0.2, 1);
+    const maxAbsDiff = recordedSeries
+      .reduce((a, b) => Math.max(a, Math.abs(b.diff)), 0);
+    const maxScale = (maxAbsDiff || fallbackScale) * 1.1;
     for (const s of series) {
       const slot = document.createElement('div');
       slot.className = 'bar-slot';
@@ -727,14 +804,13 @@
       posHalf.className = 'bar-half pos';
       const negHalf = document.createElement('div');
       negHalf.className = 'bar-half neg';
-      const recorded = s.total > 0;
-      if (recorded) {
-        const diff = s.total - target;
+      if (s.recorded) {
+        const diff = s.diff;
         const bar = document.createElement('div');
         bar.className = 'bar ' + (diff >= 0 ? 'over' : 'under');
         const heightPct = Math.min(100, Math.abs(diff) / maxScale * 100);
         bar.style.height = Math.max(2, heightPct) + '%';
-        bar.title = `${s.date}: ${formatSignedKcal(diff)} 大卡`;
+        bar.title = `${s.date}: ${formatSignedKcal(diff)} 大卡（目标 ${round1(s.target)}）`;
         if (days <= 7) {
           const val = document.createElement('span');
           val.className = 'bar-value';
@@ -755,7 +831,7 @@
 
     const list = $('#historyList');
     list.innerHTML = '';
-    const withData = series.filter(s => s.total > 0).slice().reverse();
+    const withData = recordedSeries.slice().reverse();
     if (withData.length === 0) {
       const li = document.createElement('li');
       li.style.color = 'var(--muted)';
@@ -769,7 +845,7 @@
         const dateSpan = document.createElement('span');
         dateSpan.className = 'date';
         dateSpan.textContent = formatDateLong(s.date);
-        const diff = s.total - target;
+        const diff = s.diff;
         const totalSpan = document.createElement('span');
         let cls = 'total';
         if (diff > 0) cls += ' over';
