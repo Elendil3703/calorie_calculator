@@ -471,7 +471,8 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
   align-items: stretch;
   gap: 4px;
   height: 180px;
-  padding: 0 4px;
+  /* 右侧留出 28px 装参考虚线的标签，避免和末日柱子重叠 */
+  padding: 0 32px 0 4px;
   margin-bottom: 24px;
   position: relative;
 }
@@ -480,7 +481,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
   content: '';
   position: absolute;
   left: 4px;
-  right: 4px;
+  right: 32px;
   top: 50%;
   height: 1px;
   background: var(--border);
@@ -490,22 +491,21 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .chart-ref {
   position: absolute;
   left: 4px;
-  right: 4px;
+  right: 32px;
   height: 0;
   border-top: 1px dashed var(--primary);
-  opacity: 0.45;
+  opacity: 0.55;
   pointer-events: none;
   z-index: 1;
 }
 .chart-ref .chart-ref-label {
   position: absolute;
-  right: 0;
-  top: -7px;
-  font-size: 9px;
+  left: calc(100% + 4px);
+  top: -6px;
+  font-size: 10px;
   color: var(--primary);
-  background: var(--card, #fff);
-  padding: 0 3px;
   line-height: 1;
+  white-space: nowrap;
 }
 .chart .bar-slot {
   flex: 1;
