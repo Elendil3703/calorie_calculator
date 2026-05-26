@@ -790,23 +790,32 @@
 
     const chart = $('#chart');
     chart.innerHTML = '';
-    // 参考线：常见的目标缺口 −100 / −300 / −500（摄入 < 消耗）。
+    // 参考线：常见的目标差额 ±100 / ±300 / ±500
+    // 负值（摄入 < 消耗）= 缺口；正值（摄入 > 消耗）= 盈余。
     const refLevels = [100, 300, 500];
     // 半轴标尺：覆盖最大 |差额| 与最大参考线，再留 10% 余量。
     const maxAbsDiff = recordedSeries
       .reduce((a, b) => Math.max(a, Math.abs(b.diff)), 0);
     const maxScale = Math.max(maxAbsDiff, refLevels[refLevels.length - 1]) * 1.1;
     // 把虚线挂在图表自身（绝对定位），位置按距零基线的百分比计算。
+    const refRows = [];
     for (const lvl of refLevels) {
+      refRows.push({ value: -lvl, sign: '−', cls: 'neg' });
+      refRows.push({ value: lvl, sign: '+', cls: 'pos' });
+    }
+    for (const r of refRows) {
       const line = document.createElement('div');
-      line.className = 'chart-ref';
-      // 零线在 50%，往下偏移 (lvl/maxScale)*50%
-      const offsetPct = (lvl / maxScale) * 50;
-      line.style.top = `calc(50% + ${offsetPct}%)`;
-      line.title = `目标缺口 −${lvl} 大卡`;
+      line.className = `chart-ref chart-ref--${r.cls}`;
+      // 零线在 50%；正值往上偏移，负值往下偏移
+      const offsetPct = (Math.abs(r.value) / maxScale) * 50;
+      line.style.top = r.value < 0
+        ? `calc(50% + ${offsetPct}%)`
+        : `calc(50% - ${offsetPct}%)`;
+      const titlePrefix = r.value < 0 ? '目标缺口' : '盈余参考';
+      line.title = `${titlePrefix} ${r.sign}${Math.abs(r.value)} 大卡`;
       const lab = document.createElement('span');
       lab.className = 'chart-ref-label';
-      lab.textContent = `−${lvl}`;
+      lab.textContent = `${r.sign}${Math.abs(r.value)}`;
       line.appendChild(lab);
       chart.appendChild(line);
     }

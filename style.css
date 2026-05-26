@@ -170,6 +170,14 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; padding-bottom: 40px; }
   margin-left: 2px;
 }
 .breakdown li.add .bd-val { color: var(--accent); }
+.breakdown li.add { flex-direction: column; align-items: stretch; }
+.breakdown li.add .bd-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  width: 100%;
+}
+.breakdown li.add .hint-line { margin: 4px 0 0; }
 .breakdown li.sub .bd-val { color: #2563eb; }
 .breakdown li.total {
   border-top: 1px solid var(--border);
@@ -487,7 +495,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
   background: var(--border);
   pointer-events: none;
 }
-/* 目标缺口参考虚线：−100 / −300 / −500（top 由 JS 设置） */
+/* 目标差额参考虚线：±100 / ±300 / ±500（top 由 JS 设置） */
 .chart-ref {
   position: absolute;
   left: 4px;
@@ -498,15 +506,18 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
   pointer-events: none;
   z-index: 1;
 }
+.chart-ref--pos { border-top-color: var(--danger); }
+.chart-ref--neg { border-top-color: var(--primary); }
 .chart-ref .chart-ref-label {
   position: absolute;
   left: calc(100% + 4px);
   top: -6px;
   font-size: 10px;
-  color: var(--primary);
   line-height: 1;
   white-space: nowrap;
 }
+.chart-ref--pos .chart-ref-label { color: var(--danger); }
+.chart-ref--neg .chart-ref-label { color: var(--primary); }
 .chart .bar-slot {
   flex: 1;
   display: flex;

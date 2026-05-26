@@ -102,15 +102,17 @@
         <ul class="breakdown">
           <li><span class="bd-label">基础代谢</span><span class="bd-val" id="bdBmr">--</span></li>
           <li class="add">
-            <span class="bd-label">＋ 计划运动</span>
-            <span class="bd-val bd-editable">
-              <input type="number" id="bdExerciseInput" inputmode="decimal" min="0" step="50" />
-            </span>
+            <div class="bd-row">
+              <span class="bd-label">＋ 计划运动</span>
+              <span class="bd-val bd-editable">
+                <input type="number" id="bdExerciseInput" inputmode="decimal" min="0" step="50" />
+              </span>
+            </div>
+            <p class="muted hint-line">点击数字可修改今日运动量，仅影响今天。</p>
           </li>
           <li class="sub"><span class="bd-label">− 热量缺口</span><span class="bd-val" id="bdDeficit">--</span></li>
           <li class="total"><span class="bd-label">＝ 饮食目标</span><span class="bd-val" id="bdTarget">--</span></li>
         </ul>
-        <p class="muted hint-line">点击数字可修改今日运动量，仅影响今天。</p>
       </div>
 
       <div id="lastEntryToast" class="last-entry hidden"></div>
