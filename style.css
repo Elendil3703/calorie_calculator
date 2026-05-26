@@ -486,6 +486,27 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
   background: var(--border);
   pointer-events: none;
 }
+/* 目标缺口参考虚线：−100 / −300 / −500（top 由 JS 设置） */
+.chart-ref {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 0;
+  border-top: 1px dashed var(--primary);
+  opacity: 0.45;
+  pointer-events: none;
+  z-index: 1;
+}
+.chart-ref .chart-ref-label {
+  position: absolute;
+  right: 0;
+  top: -7px;
+  font-size: 9px;
+  color: var(--primary);
+  background: var(--card, #fff);
+  padding: 0 3px;
+  line-height: 1;
+}
 .chart .bar-slot {
   flex: 1;
   display: flex;

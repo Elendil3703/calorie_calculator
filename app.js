@@ -759,24 +759,22 @@
     const bmr = profile ? profile.bmr : 0;
     const defaultExercise = profile ? profile.exercise : 0;
     // 统计区间一律不含今天：循环从 i=days 取到 i=1（即昨天起向前 days 天）
-    // 每一天的目标用当天的快照算：BMR + 当天运动 − 当天 deficit。
-    // 当天没有 daily_deficit 快照 ⇒ 没法算目标，按"无记录"跳过（哪怕 entries 有数据）。
+    // 每天的「差额」= 当日摄入 − 当日消耗（消耗 = BMR + 当天运动）。
+    // 没记录食物的天直接跳过；当天没有运动快照就回退到当前默认运动量。
     const series = [];
     for (let i = days; i >= 1; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
       const total = historyData[dateStr] || 0;
-      const dDeficit = historyDeficit[dateStr];
-      const hasDeficit = dDeficit != null && isFinite(dDeficit);
       const dExercise = historyExercise[dateStr] != null ? historyExercise[dateStr] : defaultExercise;
-      const target = hasDeficit ? (bmr + dExercise - dDeficit) : null;
-      const recorded = total > 0 && hasDeficit;
+      const expenditure = bmr + dExercise;
+      const recorded = total > 0;
       series.push({
         date: dateStr,
         total,
-        target,
-        diff: recorded ? (total - target) : null,
+        expenditure,
+        diff: recorded ? (total - expenditure) : null,
         recorded,
       });
     }
@@ -786,17 +784,32 @@
       : 0;
     const overCount = recordedSeries.filter(s => s.diff > 0).length;
     $('#statsSummary').innerHTML = `
-      <div class="item"><div class="num">${formatSignedKcal(avgDiff)}</div><div class="lab">日均盈亏 (有记录)</div></div>
+      <div class="item"><div class="num">${formatSignedKcal(avgDiff)}</div><div class="lab">日均差额 (摄入−消耗)</div></div>
       <div class="item"><div class="num">${overCount}</div><div class="lab">超额天数</div></div>
     `;
 
     const chart = $('#chart');
     chart.innerHTML = '';
-    // 以最大 |差额| 为半轴标尺；没数据时退化到 当前 target*0.2 防 0 除
-    const fallbackScale = Math.max(targetIntake() * 0.2, 1);
+    // 参考线：常见的目标缺口 −100 / −300 / −500（摄入 < 消耗）。
+    const refLevels = [100, 300, 500];
+    // 半轴标尺：覆盖最大 |差额| 与最大参考线，再留 10% 余量。
     const maxAbsDiff = recordedSeries
       .reduce((a, b) => Math.max(a, Math.abs(b.diff)), 0);
-    const maxScale = (maxAbsDiff || fallbackScale) * 1.1;
+    const maxScale = Math.max(maxAbsDiff, refLevels[refLevels.length - 1]) * 1.1;
+    // 把虚线挂在图表自身（绝对定位），位置按距零基线的百分比计算。
+    for (const lvl of refLevels) {
+      const line = document.createElement('div');
+      line.className = 'chart-ref';
+      // 零线在 50%，往下偏移 (lvl/maxScale)*50%
+      const offsetPct = (lvl / maxScale) * 50;
+      line.style.top = `calc(50% + ${offsetPct}%)`;
+      line.title = `目标缺口 −${lvl} 大卡`;
+      const lab = document.createElement('span');
+      lab.className = 'chart-ref-label';
+      lab.textContent = `−${lvl}`;
+      line.appendChild(lab);
+      chart.appendChild(line);
+    }
     for (const s of series) {
       const slot = document.createElement('div');
       slot.className = 'bar-slot';
@@ -810,7 +823,7 @@
         bar.className = 'bar ' + (diff >= 0 ? 'over' : 'under');
         const heightPct = Math.min(100, Math.abs(diff) / maxScale * 100);
         bar.style.height = Math.max(2, heightPct) + '%';
-        bar.title = `${s.date}: ${formatSignedKcal(diff)} 大卡（目标 ${round1(s.target)}）`;
+        bar.title = `${s.date}: 摄入 ${round1(s.total)} − 消耗 ${round1(s.expenditure)} = ${formatSignedKcal(diff)} 大卡`;
         if (days <= 7) {
           const val = document.createElement('span');
           val.className = 'bar-value';
