@@ -790,18 +790,19 @@
 
     const chart = $('#chart');
     chart.innerHTML = '';
-    // 参考线：常见的目标差额 ±100 / ±300 / ±500
-    // 负值（摄入 < 消耗）= 缺口；正值（摄入 > 消耗）= 盈余。
-    const refLevels = [100, 300, 500];
-    // 半轴标尺：覆盖最大 |差额| 与最大参考线，再留 10% 余量。
-    const maxAbsDiff = recordedSeries
-      .reduce((a, b) => Math.max(a, Math.abs(b.diff)), 0);
-    const maxScale = Math.max(maxAbsDiff, refLevels[refLevels.length - 1]) * 1.1;
-    // 把虚线挂在图表自身（绝对定位），位置按距零基线的百分比计算。
+    // 参考线档位：±300 / ±500 / ±1000。
+    // 只在数据真的越过该档位时才画 —— 例如没有任何一天 ≥ +300，就不画 +300 线。
+    // 负侧（缺口）和正侧（盈余）分别判断。
+    const refLevels = [300, 500, 1000];
+    const maxPosDiff = recordedSeries.reduce((a, b) => Math.max(a, b.diff), 0);
+    const maxNegDiff = recordedSeries.reduce((a, b) => Math.max(a, -b.diff), 0);
+    const maxAbsDiff = Math.max(maxPosDiff, maxNegDiff);
+    // 防 0 除：没数据时 scale 取 1，反正也没柱子要画。
+    const maxScale = Math.max(maxAbsDiff, 1) * 1.1;
     const refRows = [];
     for (const lvl of refLevels) {
-      refRows.push({ value: -lvl, sign: '−', cls: 'neg' });
-      refRows.push({ value: lvl, sign: '+', cls: 'pos' });
+      if (maxNegDiff >= lvl) refRows.push({ value: -lvl, sign: '−', cls: 'neg' });
+      if (maxPosDiff >= lvl) refRows.push({ value: lvl, sign: '+', cls: 'pos' });
     }
     for (const r of refRows) {
       const line = document.createElement('div');
