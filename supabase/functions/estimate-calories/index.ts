@@ -15,7 +15,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY')!;
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
-const MODEL = 'claude-haiku-4-5-20251001';
+const MODEL = 'claude-opus-4-7';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -32,7 +32,14 @@ const SYSTEM_PROMPT = `你是中餐为主的营养估算助手。用户用中文
 - 用户描述里的每一项独立食物各占数组中的一项
 - 每项的 name 要保留份量信息并使用自然中文（例如「两个鸡腿」、「50g 巴沙鱼」、「一些蘑菇」、「一碗米饭」），不要拆掉数量
 - 每项的 calories 是该项按用户描述的份量估算出的整数大卡数（不要写区间、不要带单位、不要带其他字段）
-- 份量未明确时（如「一些」「适量」），按常见家庭单人份估算
+- 严格按用户输入估算：用户写了什么就是什么，不要自行添加用户没有提到的食材、配菜、额外用油或调味，也不要自行删减用户写到的部分
+- 食物的默认形态按"该食材最常见的食用形态"判断，不要主动往清淡或往油腻偏：
+  - 鸡腿默认带皮带骨；写明「去皮」才按去皮算，写明「鸡腿肉」按去皮去骨纯肉算
+  - 米饭默认白米饭（熟）；写明「炒饭」才按炒饭算
+  - 鱼/虾/肉类没写做法时，按生重计算原料热量，不额外加油
+  - 蔬菜没写做法时，按生重/水煮计算，不额外加油
+- 用户没写份量时，按该食物的标准单人份估算（例：「一碗米饭」≈ 150g 熟饭；「一个鸡腿」≈ 生重 120g 带皮带骨；「一份」≈ 常见餐厅单人份）
+- 用户明确写了克数/个数/碗数时，必须严格按该份量线性估算，不要凑整到偏高或偏低的数字
 - 如果输入不是食物，返回 {"error": "not_food"}`;
 
 serve(async (req) => {
