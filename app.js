@@ -55,6 +55,8 @@
   let currentDate = null;
   let aiEstimate = null;
   let exerciseSaveTimer = null;
+  // 防抖窗口里待写的运动量 {date, value}；记下编辑时的日期，别用切换后的 currentDate。
+  let pendingExerciseSave = null;
   let fridgeItems = [];
   // null = 添加模式；非 null = 正在编辑那一项 id
   let editingFridgeId = null;
@@ -148,13 +150,14 @@
     }
   }
 
-  // 把还在防抖窗口里的待写值立刻冲到库里。失焦/关闭/切走时用。
+  // 把还在防抖窗口里的待写值立刻冲到库里。失焦/关闭/切走/loadAll 前用。
+  // 返回写库的 promise，调用方可以 await 它确保读回前已落库。
   function flushPendingExerciseSave() {
-    if (exerciseSaveTimer) {
-      clearTimeout(exerciseSaveTimer);
-      exerciseSaveTimer = null;
-      saveDailyExerciseToDb(currentDate, dailyExercise);
-    }
+    if (exerciseSaveTimer) { clearTimeout(exerciseSaveTimer); exerciseSaveTimer = null; }
+    if (!pendingExerciseSave) return Promise.resolve();
+    const { date, value } = pendingExerciseSave;
+    pendingExerciseSave = null;
+    return saveDailyExerciseToDb(date, value);
   }
 
   // ---------- Utils ----------
@@ -375,6 +378,9 @@
 
   // ---------- Data ----------
   async function loadAll() {
+    // 先把还在防抖窗口里的运动量写库，否则下面 fetch 会读回旧值/默认值，
+    // 把用户刚改还没落库的数字冲掉（切回前台 / 跨午夜刷新时最容易触发）。
+    await flushPendingExerciseSave();
     currentDate = todayStr();
     const userId = session.user.id;
     const exFromDb = await fetchDailyExerciseFromDb(currentDate);
@@ -1280,12 +1286,10 @@
       // 防抖写库：每次按键改 in-memory + 进度条；攒够 EXERCISE_SAVE_DEBOUNCE_MS
       // 没新输入再 upsert，避免一串数字打出 5 次 PATCH。
       if (exerciseSaveTimer) clearTimeout(exerciseSaveTimer);
-      const dateAtEdit = currentDate;
-      const valueAtEdit = dailyExercise;
-      exerciseSaveTimer = setTimeout(() => {
-        exerciseSaveTimer = null;
-        saveDailyExerciseToDb(dateAtEdit, valueAtEdit);
-      }, EXERCISE_SAVE_DEBOUNCE_MS);
+      // 记下编辑时的日期+值，flushPendingExerciseSave 用这份快照写库——
+      // 这样切回前台/跨午夜触发 loadAll 时能先把它落库再读回，不会被默认值冲掉。
+      pendingExerciseSave = { date: currentDate, value: dailyExercise };
+      exerciseSaveTimer = setTimeout(flushPendingExerciseSave, EXERCISE_SAVE_DEBOUNCE_MS);
       $('#bdTarget').textContent = round1(targetIntake());
       // 重算 summary + 进度条但不刷新输入框（用户正在打字）
       const total = entriesTotal(todayEntries);
@@ -1302,7 +1306,9 @@
     bdEx.addEventListener('blur', () => {
       if (bdEx.value === '' || !isFinite(parseFloat(bdEx.value))) {
         // 用户清空 = 回到默认；删掉今天的 override 行（没行 = 用 profile.exercise）。
+        // 一并丢掉待写快照，否则它之后会把刚删的值又写回去。
         if (exerciseSaveTimer) { clearTimeout(exerciseSaveTimer); exerciseSaveTimer = null; }
+        pendingExerciseSave = null;
         dailyExercise = profile ? profile.exercise : 0;
         clearDailyExerciseInDb(currentDate);
         renderToday();
