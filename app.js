@@ -49,6 +49,12 @@
   // 过去 30 天的 daily_deficit 快照。没行 = 那一天没快照，
   // 统计页要按"无记录"处理——别拿当前 deficit 回填历史。
   let historyDeficit = {};
+  // 放纵日集合（'YYYY-MM-DD'，含今天 + 过去 30 天）。在集合里 = 放纵日：
+  // 统计图用特殊颜色标出，且当天摄入不计入统计。
+  let cheatDays = new Set();
+  // 当前打开的「往日详情」弹窗状态。date 为 null = 弹窗没开。
+  let dayDetailDate = null;
+  let dayDetailEntries = [];
   let statsRange = 'week';
   let inputMode = 'fridge';
   let midnightTimer = null;
@@ -146,6 +152,37 @@
       if (error) throw error;
     } catch (e) {
       console.warn('[saveDailyDeficit] failed:', e);
+      if (isAuthError(e)) { await forceReauth('会话已过期，请重新登录'); }
+    }
+  }
+
+  // 放纵日：有行 = 放纵日，没行 = 普通日。on=true upsert，on=false 删行。
+  async function setCheatDayInDb(date, on) {
+    if (!session) return;
+    try {
+      if (on) {
+        const { error } = await withTimeout(
+          sb.from('cheat_days').upsert({
+            user_id: session.user.id,
+            date,
+            updated_at: new Date().toISOString(),
+          }),
+          6000,
+          'setCheatDay'
+        );
+        if (error) throw error;
+      } else {
+        const { error } = await withTimeout(
+          sb.from('cheat_days').delete()
+            .eq('user_id', session.user.id)
+            .eq('date', date),
+          6000,
+          'clearCheatDay'
+        );
+        if (error) throw error;
+      }
+    } catch (e) {
+      console.warn('[setCheatDay] failed:', e);
       if (isAuthError(e)) { await forceReauth('会话已过期，请重新登录'); }
     }
   }
@@ -444,6 +481,21 @@
       console.warn('[loadAll] historyDeficit failed:', e);
     }
 
+    // 放纵日集合：含今天（统计页不画今天，但今日页的按钮要回显状态）。
+    // 表可能还没建好，错误吞掉当作"没有放纵日"。
+    cheatDays = new Set();
+    try {
+      const { data: hcd, error: e6 } = await withTimeout(
+        sb.from('cheat_days').select('date').gte('date', startStr).lte('date', currentDate),
+        8000,
+        'loadAll/cheatDays'
+      );
+      if (e6) throw e6;
+      for (const row of (hcd || [])) cheatDays.add(row.date);
+    } catch (e) {
+      console.warn('[loadAll] cheatDays failed:', e);
+    }
+
     // 给今天 upsert 一个 deficit 快照，覆盖最新设定。改 deficit 也会走 saveDeficit 再写一次。
     if (historyDeficit[currentDate] !== deficit) {
       historyDeficit[currentDate] = deficit;
@@ -506,6 +558,51 @@
     todayEntries = todayEntries.filter(e => e.id !== id);
     renderToday();
   }
+  // ---- 往日详情弹窗用的 entries 读写。和今日的 addEntry/removeEntry 分开，
+  //      因为这些操作针对任意一天，要顺手保持 todayEntries 同步（万一改的是今天）。
+  async function fetchEntriesForDate(date) {
+    const { data, error } = await withTimeout(
+      sb.from('entries').select('*').eq('date', date).order('created_at', { ascending: false }),
+      8000,
+      'fetchEntriesForDate'
+    );
+    if (error) throw error;
+    return data || [];
+  }
+  async function updateEntryCalories(id, calories) {
+    const { data, error } = await sb.from('entries')
+      .update({ calories }).eq('id', id).select().single();
+    if (error) {
+      if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return null; }
+      alert('保存失败：' + error.message);
+      return null;
+    }
+    const idx = todayEntries.findIndex(e => e.id === id);
+    if (idx >= 0) todayEntries[idx] = data;
+    return data;
+  }
+  async function deleteEntryById(id) {
+    const { error } = await sb.from('entries').delete().eq('id', id);
+    if (error) {
+      if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return false; }
+      alert('删除失败：' + error.message);
+      return false;
+    }
+    todayEntries = todayEntries.filter(e => e.id !== id);
+    return true;
+  }
+  async function insertEntryForDate(date, payload) {
+    const enriched = { ...payload, date, user_id: session.user.id };
+    const { data, error } = await sb.from('entries').insert(enriched).select().single();
+    if (error) {
+      if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return null; }
+      alert('添加失败：' + error.message);
+      return null;
+    }
+    if (date === currentDate) todayEntries.unshift(data);
+    return data;
+  }
+
   async function saveDeficit(value) {
     const { error } = await sb.from('settings').upsert({
       user_id: session.user.id,
@@ -587,8 +684,24 @@
       ? `${userName} · ${session && session.user ? session.user.email : ''}`
       : '--';
   }
+  function updateCheatButton() {
+    const btn = $('#cheatToggleBtn');
+    if (!btn) return;
+    const on = cheatDays.has(currentDate || todayStr());
+    btn.classList.toggle('active', on);
+    btn.textContent = on ? '🍰 今天是放纵日（点击取消）' : '🍰 标记为放纵日';
+  }
+  async function handleToggleCheat() {
+    const date = currentDate || todayStr();
+    const on = !cheatDays.has(date);
+    if (on) cheatDays.add(date); else cheatDays.delete(date);
+    updateCheatButton();
+    await setCheatDayInDb(date, on);
+    renderStats();
+  }
   function renderToday() {
     $('#dateLine').textContent = formatDateLong(currentDate || todayStr());
+    updateCheatButton();
     const target = targetIntake();
     const total = entriesTotal(todayEntries);
     const remaining = target - total;
@@ -775,16 +888,19 @@
       const total = historyData[dateStr] || 0;
       const dExercise = historyExercise[dateStr] != null ? historyExercise[dateStr] : defaultExercise;
       const expenditure = bmr + dExercise;
+      const cheat = cheatDays.has(dateStr);
       const recorded = total > 0;
       series.push({
         date: dateStr,
         total,
         expenditure,
+        cheat,
         diff: recorded ? (total - expenditure) : null,
         recorded,
       });
     }
-    const recordedSeries = series.filter(s => s.recorded);
+    // 放纵日不计入统计（日均差额 / 超额天数 / 参考线缩放都跳过它）。
+    const recordedSeries = series.filter(s => s.recorded && !s.cheat);
     const avgDiff = recordedSeries.length
       ? recordedSeries.reduce((a, b) => a + b.diff, 0) / recordedSeries.length
       : 0;
@@ -829,11 +945,20 @@
     for (const s of series) {
       const slot = document.createElement('div');
       slot.className = 'bar-slot';
+      // 点柱子（含空白天）打开往日详情，可查看并编辑当天摄入/运动。
+      slot.addEventListener('click', () => openDayDetail(s.date));
       const posHalf = document.createElement('div');
       posHalf.className = 'bar-half pos';
       const negHalf = document.createElement('div');
       negHalf.className = 'bar-half neg';
-      if (s.recorded) {
+      if (s.cheat) {
+        // 放纵日：零线上画一个特殊标记，不画差额柱子。
+        const mark = document.createElement('div');
+        mark.className = 'bar-cheat';
+        mark.title = `${s.date}: 放纵日（不计入统计）`;
+        mark.textContent = '🍰';
+        slot.appendChild(mark);
+      } else if (s.recorded) {
         const diff = s.diff;
         const bar = document.createElement('div');
         bar.className = 'bar ' + (diff >= 0 ? 'over' : 'under');
@@ -860,7 +985,8 @@
 
     const list = $('#historyList');
     list.innerHTML = '';
-    const withData = recordedSeries.slice().reverse();
+    // 有摄入记录或被标为放纵日的天都列出来（放纵日单独标注，不显示差额）。
+    const withData = series.filter(s => s.recorded || s.cheat).slice().reverse();
     if (withData.length === 0) {
       const li = document.createElement('li');
       li.style.color = 'var(--muted)';
@@ -871,16 +997,23 @@
     } else {
       for (const s of withData) {
         const li = document.createElement('li');
+        li.classList.add('clickable');
+        li.addEventListener('click', () => openDayDetail(s.date));
         const dateSpan = document.createElement('span');
         dateSpan.className = 'date';
         dateSpan.textContent = formatDateLong(s.date);
-        const diff = s.diff;
         const totalSpan = document.createElement('span');
-        let cls = 'total';
-        if (diff > 0) cls += ' over';
-        else if (diff < 0) cls += ' under';
-        totalSpan.className = cls;
-        totalSpan.textContent = `${formatSignedKcal(diff)} 大卡`;
+        if (s.cheat) {
+          totalSpan.className = 'total cheat';
+          totalSpan.textContent = '🍰 放纵日';
+        } else {
+          const diff = s.diff;
+          let cls = 'total';
+          if (diff > 0) cls += ' over';
+          else if (diff < 0) cls += ' under';
+          totalSpan.className = cls;
+          totalSpan.textContent = `${formatSignedKcal(diff)} 大卡`;
+        }
         li.appendChild(dateSpan);
         li.appendChild(totalSpan);
         list.appendChild(li);
@@ -901,6 +1034,206 @@
       $('#settingsBodyInfo').textContent =
         `${profile.gender} · ${profile.age} 岁 · ${profile.height} cm · ${profile.weight} kg`;
     }
+  }
+
+  // ---------- Day detail (往日查看 / 编辑) ----------
+  // 统计图/历史列表只画昨天往前，所以这里 date 永远是过去的某天，
+  // 不会等于 currentDate；涉及今天的分支只是防御性兜底。
+  function closeDayDetail() {
+    dayDetailDate = null;
+    dayDetailEntries = [];
+    $('#dayDetailOverlay').classList.add('hidden');
+  }
+  function dayExerciseInfo(date) {
+    const def = profile ? profile.exercise : 0;
+    if (date === currentDate) {
+      return { value: dailyExercise, isOverride: dailyExercise !== def, def };
+    }
+    if (historyExercise[date] != null) return { value: historyExercise[date], isOverride: true, def };
+    return { value: def, isOverride: false, def };
+  }
+  function dayDetailTotal() {
+    return dayDetailEntries.reduce((s, e) => s + Number(e.calories), 0);
+  }
+  // 把当天合计同步进统计图的数据源。今天不在图里（用 todayEntries），跳过。
+  function syncHistoryTotal(date) {
+    if (date === currentDate) return;
+    const sum = dayDetailTotal();
+    if (sum > 0) historyData[date] = sum; else delete historyData[date];
+  }
+  function dayExHintText(date) {
+    const ex = dayExerciseInfo(date);
+    return ex.isOverride
+      ? `默认 ${round1(ex.def)} 大卡 · 清空输入可恢复默认`
+      : `当前为默认值 ${round1(ex.def)} 大卡`;
+  }
+  async function openDayDetail(date) {
+    dayDetailDate = date;
+    const overlay = $('#dayDetailOverlay');
+    $('#dayDetailDate').textContent = formatDateLong(date);
+    $('#dayDetailEntries').innerHTML = '<li class="empty">加载中…</li>';
+    $('#dayDetailCheat').checked = cheatDays.has(date);
+    const ex = dayExerciseInfo(date);
+    $('#dayDetailExercise').value = round1(ex.value);
+    $('#dayDetailExHint').textContent = dayExHintText(date);
+    $('#dayDetailSummary').innerHTML = '';
+    overlay.classList.remove('hidden');
+    try {
+      dayDetailEntries = await fetchEntriesForDate(date);
+    } catch (e) {
+      console.warn('[openDayDetail] fetch failed:', e);
+      dayDetailEntries = [];
+    }
+    if (dayDetailDate !== date) return; // 期间被关掉/换了天
+    renderDayDetailEntries();
+    updateDayDetailSummary();
+  }
+  function updateDayDetailSummary() {
+    if (!dayDetailDate) return;
+    const total = dayDetailTotal();
+    const ex = dayExerciseInfo(dayDetailDate);
+    const expenditure = (profile ? profile.bmr : 0) + ex.value;
+    const diff = total - expenditure;
+    const cheat = $('#dayDetailCheat').checked;
+    const diffHtml = cheat
+      ? `<div class="item"><div class="num cheat">🍰</div><div class="lab">放纵日·不计入</div></div>`
+      : `<div class="item"><div class="num">${formatSignedKcal(diff)}</div><div class="lab">差额</div></div>`;
+    $('#dayDetailSummary').innerHTML = `
+      <div class="item"><div class="num">${round1(total)}</div><div class="lab">摄入</div></div>
+      <div class="item"><div class="num">${round1(expenditure)}</div><div class="lab">消耗</div></div>
+      ${diffHtml}
+    `;
+  }
+  function renderDayDetailEntries() {
+    const list = $('#dayDetailEntries');
+    list.innerHTML = '';
+    if (dayDetailEntries.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'empty';
+      li.textContent = '当天没有摄入记录';
+      list.appendChild(li);
+      return;
+    }
+    for (const e of dayDetailEntries) {
+      const li = document.createElement('li');
+      const left = document.createElement('div');
+      left.className = 'dd-entry-left';
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = e.name;
+      left.appendChild(name);
+      if (e.detail) {
+        const detail = document.createElement('div');
+        detail.className = 'detail';
+        detail.textContent = e.detail;
+        left.appendChild(detail);
+      }
+      const right = document.createElement('div');
+      right.className = 'dd-entry-right';
+      const kcalInput = document.createElement('input');
+      kcalInput.type = 'number';
+      kcalInput.inputMode = 'decimal';
+      kcalInput.className = 'dd-kcal';
+      kcalInput.value = round1(e.calories);
+      kcalInput.addEventListener('change', () => handleEditEntryKcal(e, kcalInput));
+      const unit = document.createElement('span');
+      unit.className = 'dd-unit';
+      unit.textContent = '大卡';
+      const del = document.createElement('button');
+      del.className = 'delete';
+      del.textContent = '×';
+      del.title = '删除';
+      del.addEventListener('click', () => handleDeleteDayEntry(e));
+      right.appendChild(kcalInput);
+      right.appendChild(unit);
+      right.appendChild(del);
+      li.appendChild(left);
+      li.appendChild(right);
+      list.appendChild(li);
+    }
+  }
+  function refreshAfterDayEdit(date) {
+    syncHistoryTotal(date);
+    updateDayDetailSummary();
+    renderStats();
+    if (date === currentDate) renderToday();
+  }
+  async function handleEditEntryKcal(entry, input) {
+    const v = parseFloat(input.value);
+    if (!isFinite(v) || v < 0) { input.value = round1(entry.calories); return; }
+    const newVal = round1(v);
+    if (newVal === round1(entry.calories)) return;
+    const updated = await updateEntryCalories(entry.id, newVal);
+    if (!updated) { input.value = round1(entry.calories); return; }
+    entry.calories = updated.calories;
+    input.value = round1(updated.calories);
+    refreshAfterDayEdit(dayDetailDate);
+  }
+  async function handleDeleteDayEntry(entry) {
+    const ok = await deleteEntryById(entry.id);
+    if (!ok) return;
+    dayDetailEntries = dayDetailEntries.filter(e => e.id !== entry.id);
+    renderDayDetailEntries();
+    refreshAfterDayEdit(dayDetailDate);
+  }
+  async function handleAddDayEntry() {
+    if (!dayDetailDate) return;
+    const name = $('#dayDetailAddName').value.trim() || '未命名';
+    const v = parseFloat($('#dayDetailAddKcal').value);
+    if (!isFinite(v) || v <= 0) { alert('请输入有效大卡数'); return; }
+    const btn = $('#dayDetailAddBtn');
+    btn.disabled = true; const old = btn.textContent; btn.textContent = '补录中…';
+    const entry = await insertEntryForDate(dayDetailDate, {
+      name, calories: round1(v), mode: 'direct', detail: '手动补录',
+    });
+    btn.disabled = false; btn.textContent = old;
+    if (!entry) return;
+    dayDetailEntries.unshift(entry);
+    $('#dayDetailAddName').value = '';
+    $('#dayDetailAddKcal').value = '';
+    renderDayDetailEntries();
+    refreshAfterDayEdit(dayDetailDate);
+  }
+  async function handleDayDetailExercise() {
+    const input = $('#dayDetailExercise');
+    const date = dayDetailDate;
+    const def = profile ? profile.exercise : 0;
+    if (input.value === '' || !isFinite(parseFloat(input.value))) {
+      delete historyExercise[date];
+      if (date === currentDate) dailyExercise = def;
+      await clearDailyExerciseInDb(date);
+    } else {
+      let v = round1(parseFloat(input.value));
+      if (v < 0) v = 0;
+      if (v > MAX_PLAUSIBLE_EXERCISE) v = MAX_PLAUSIBLE_EXERCISE;
+      historyExercise[date] = v;
+      if (date === currentDate) dailyExercise = v;
+      await saveDailyExerciseToDb(date, v);
+    }
+    const ex = dayExerciseInfo(date);
+    input.value = round1(ex.value);
+    $('#dayDetailExHint').textContent = dayExHintText(date);
+    updateDayDetailSummary();
+    renderStats();
+    if (date === currentDate) renderToday();
+  }
+  async function handleDayDetailCheat() {
+    const date = dayDetailDate;
+    const on = $('#dayDetailCheat').checked;
+    if (on) cheatDays.add(date); else cheatDays.delete(date);
+    await setCheatDayInDb(date, on);
+    updateDayDetailSummary();
+    renderStats();
+    if (date === currentDate) updateCheatButton();
+  }
+  function setupDayDetailEvents() {
+    $('#dayDetailClose').addEventListener('click', closeDayDetail);
+    $('#dayDetailOverlay').addEventListener('click', (e) => {
+      if (e.target === $('#dayDetailOverlay')) closeDayDetail();
+    });
+    $('#dayDetailCheat').addEventListener('change', handleDayDetailCheat);
+    $('#dayDetailExercise').addEventListener('change', handleDayDetailExercise);
+    $('#dayDetailAddBtn').addEventListener('click', handleAddDayEntry);
   }
 
   // ---------- Form handlers ----------
@@ -1223,6 +1556,8 @@
     });
     $('#logoutBtn').addEventListener('click', handleLogout);
     $('#settingsLogoutBtn').addEventListener('click', handleLogout);
+    $('#cheatToggleBtn').addEventListener('click', handleToggleCheat);
+    setupDayDetailEvents();
 
     $$('.tab').forEach(t => {
       t.addEventListener('click', () => {

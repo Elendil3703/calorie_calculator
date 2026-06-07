@@ -9,6 +9,7 @@
   --primary-dark: #15803d;
   --accent: #f97316;
   --danger: #dc2626;
+  --cheat: #a855f7;
   --border: #e5e7eb;
   --over: #dc2626;
   --shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.03);
@@ -91,6 +92,28 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; padding-bottom: 40px; }
   color: var(--muted);
   margin-bottom: 12px;
   text-align: center;
+}
+
+/* 放纵日切换按钮（今日页） */
+.cheat-btn {
+  display: block;
+  width: 100%;
+  margin: 0 0 16px;
+  padding: 10px;
+  border: 1px dashed var(--cheat);
+  border-radius: 10px;
+  background: #faf5ff;
+  color: var(--cheat);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+.cheat-btn.active {
+  background: var(--cheat);
+  color: #fff;
+  border-style: solid;
 }
 
 /* Summary card */
@@ -524,6 +547,23 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
   flex-direction: column;
   min-width: 0;
   position: relative;
+  cursor: pointer;
+}
+/* 放纵日标记：零线正中的紫色圆点，盖在柱子区域之上 */
+.chart .bar-cheat {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--cheat);
+  border-radius: 50%;
+  font-size: 12px;
+  z-index: 2;
 }
 .chart .bar-half {
   flex: 1;
@@ -588,6 +628,9 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .history-list .total { font-weight: 600; }
 .history-list .total.over { color: var(--danger); }
 .history-list .total.under { color: var(--primary); }
+.history-list .total.cheat { color: var(--cheat); }
+.history-list li.clickable { cursor: pointer; }
+.history-list li.clickable:hover { background: #f9fafb; }
 
 /* User picker overlay */
 .overlay {
@@ -714,3 +757,78 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 }
 .help-details ol { margin: 8px 0; padding-left: 20px; color: var(--text); line-height: 1.6; }
 .help-details ol li { margin-bottom: 4px; }
+
+/* 往日详情 / 编辑弹窗 */
+.day-detail-card {
+  max-width: 420px;
+  width: 100%;
+  text-align: left;
+  max-height: 85vh;
+  overflow-y: auto;
+  position: relative;
+}
+.day-detail-card h2 { text-align: left; margin: 0 28px 4px 0; font-size: 18px; }
+.day-detail-card h3 { margin: 18px 0 8px; font-size: 14px; font-weight: 600; }
+.modal-close {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  background: none;
+  border: none;
+  font-size: 24px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+}
+.day-detail-summary { margin: 10px 0 16px; }
+.day-detail-summary .num.cheat { color: var(--cheat); }
+.cheat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text);
+  margin: 8px 0;
+  cursor: pointer;
+}
+.cheat-row input { width: auto; margin: 0; }
+.day-detail-ex {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+.day-detail-ex input { width: 110px; margin: 0; }
+.day-detail-ex .kcal-suffix { padding: 0; }
+.day-detail-ex-hint { margin: 6px 0 0; }
+.day-detail-entries .empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 12px 0;
+}
+.day-detail-entries .dd-entry-left { min-width: 0; flex: 1; }
+.day-detail-entries .dd-entry-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.day-detail-entries .dd-kcal {
+  width: 80px;
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 14px;
+  text-align: right;
+}
+.day-detail-entries .dd-unit { font-size: 12px; color: var(--muted); }
+.day-detail-add {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 12px;
+}
+.day-detail-add input { margin: 0; min-width: 0; }
+.day-detail-add input[type="text"] { flex: 2; }
+.day-detail-add input[type="number"] { flex: 1; }
+.day-detail-add .secondary-btn { flex-shrink: 0; white-space: nowrap; }

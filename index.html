@@ -78,6 +78,8 @@
     <section id="tab-today" class="tab-panel active">
       <div class="date-line" id="dateLine">--</div>
 
+      <button id="cheatToggleBtn" class="cheat-btn" type="button">🍰 标记为放纵日</button>
+
       <div class="summary-card">
         <div class="summary-row">
           <div class="summary-item">
@@ -312,11 +314,41 @@
     </section>
   </main>
 
+  <!-- 往日详情 / 编辑弹窗 — 在统计页点柱状图或历史条目打开 -->
+  <div id="dayDetailOverlay" class="overlay hidden">
+    <div class="overlay-card day-detail-card">
+      <button class="modal-close" id="dayDetailClose" type="button" aria-label="关闭">×</button>
+      <h2 id="dayDetailDate">--</h2>
+      <div class="day-detail-summary stats-summary" id="dayDetailSummary"></div>
+
+      <label class="cheat-row">
+        <input type="checkbox" id="dayDetailCheat" />
+        <span>标记为放纵日（不计入统计）</span>
+      </label>
+
+      <div class="day-detail-ex">
+        <span class="bd-label">运动量</span>
+        <input type="number" id="dayDetailExercise" inputmode="decimal" min="0" step="50" />
+        <span class="kcal-suffix">大卡</span>
+      </div>
+      <p class="muted day-detail-ex-hint" id="dayDetailExHint"></p>
+
+      <h3>摄入记录</h3>
+      <ul class="entry-list day-detail-entries" id="dayDetailEntries"></ul>
+
+      <div class="day-detail-add">
+        <input type="text" id="dayDetailAddName" placeholder="名称（选填）" />
+        <input type="number" id="dayDetailAddKcal" inputmode="decimal" placeholder="大卡" />
+        <button class="secondary-btn" id="dayDetailAddBtn" type="button">补录</button>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <!-- app.js 后面的 ?v= 是用来绕过 GitHub Pages + 浏览器磁盘缓存的。
        GH Pages 不发严格的 Cache-Control，浏览器会用启发式缓存策略，
        第二次打开常常直接读磁盘里的老 app.js，让线上 fix 看起来"没生效"。
        每次 app.js 有实质性改动就把版本号往上推一档。 -->
-  <script src="app.js?v=20260523c"></script>
+  <script src="app.js?v=20260607a"></script>
 </body>
 </html>

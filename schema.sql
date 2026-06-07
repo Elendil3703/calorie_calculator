@@ -81,3 +81,18 @@ alter table public.fridge_items enable row level security;
 
 create policy "fridge_items_own" on public.fridge_items
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- 放纵日标记。和 daily_exercise 一样靠「有没有行」表达状态：
+--   有行 = 那天是放纵日，统计页用特殊颜色标出，且当天摄入不计入统计；
+--   没行 = 普通日。
+create table public.cheat_days (
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  date       date not null,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, date)
+);
+
+alter table public.cheat_days enable row level security;
+
+create policy "cheat_days_own" on public.cheat_days
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
