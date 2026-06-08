@@ -874,7 +874,7 @@
     toast.style.color = remaining < 0 ? '#991b1b' : '#065f46';
   }
   function renderStats() {
-    const days = statsRange === 'week' ? 7 : 30;
+    const days = statsRange === 'week' ? 7 : 14;
     const bmr = profile ? profile.bmr : 0;
     const defaultExercise = profile ? profile.exercise : 0;
     // 统计区间一律不含今天：循环从 i=days 取到 i=1（即昨天起向前 days 天）
@@ -905,8 +905,14 @@
       ? recordedSeries.reduce((a, b) => a + b.diff, 0) / recordedSeries.length
       : 0;
     const overCount = recordedSeries.filter(s => s.diff > 0).length;
+    // 区间内只要有放纵日，日均差额就失去参考意义：不显示平均数，
+    // 改为提示存在几天放纵日。
+    const cheatCount = series.filter(s => s.cheat).length;
+    const avgItem = cheatCount > 0
+      ? `<div class="item"><div class="num cheat">🍰</div><div class="lab">存在 ${cheatCount} 天放纵日，不显示之前的平均数</div></div>`
+      : `<div class="item"><div class="num">${formatSignedKcal(avgDiff)}</div><div class="lab">日均差额 (摄入−消耗)</div></div>`;
     $('#statsSummary').innerHTML = `
-      <div class="item"><div class="num">${formatSignedKcal(avgDiff)}</div><div class="lab">日均差额 (摄入−消耗)</div></div>
+      ${avgItem}
       <div class="item"><div class="num">${overCount}</div><div class="lab">超额天数</div></div>
     `;
 
