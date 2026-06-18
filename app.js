@@ -701,7 +701,45 @@
     await setCheatDayInDb(date, on);
     renderStats();
   }
+  // 连续热量缺口：从昨天往前数（和统计页一样不含今天——今天还没过完，
+  // 谈不上"已经实现"）。遇到放纵日 / 没记录的日子 / 当天没实现缺口（盈余或持平）
+  // 就停，周期即"从上一个放纵日或缺失日之后开始"。历史只加载过去 30 天，最多数到 30。
+  function computeDeficitStreak() {
+    if (!profile) return { days: 0, totalDeficit: 0 };
+    const bmr = profile.bmr;
+    const defaultExercise = profile.exercise || 0;
+    let days = 0;
+    let totalDeficit = 0;
+    for (let i = 1; i <= 30; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      if (cheatDays.has(dateStr)) break;       // 放纵日：周期到此为止
+      const total = historyData[dateStr] || 0;
+      if (total <= 0) break;                    // 缺失的日期：没记录就断
+      const dExercise = historyExercise[dateStr] != null ? historyExercise[dateStr] : defaultExercise;
+      const dayDeficit = (bmr + dExercise) - total;  // 消耗 − 摄入
+      if (dayDeficit <= 0) break;               // 当天没实现缺口（盈余/持平）
+      days++;
+      totalDeficit += dayDeficit;
+    }
+    return { days, totalDeficit };
+  }
+  function renderStreakBanner() {
+    const el = $('#streakBanner');
+    if (!el) return;
+    const { days, totalDeficit } = computeDeficitStreak();
+    if (days >= 1) {
+      el.classList.remove('zero');
+      el.innerHTML = `🔥 已连续 <b>${days}</b> 天实现热量缺口，累计缺口 <b>${round1(totalDeficit)}</b> 大卡，继续保持！`;
+    } else {
+      el.classList.add('zero');
+      el.innerHTML = `🍃 还没有连续的热量缺口，从今天开始积累吧！`;
+    }
+    el.classList.remove('hidden');
+  }
   function renderToday() {
+    renderStreakBanner();
     $('#dateLine').textContent = formatDateLong(currentDate || todayStr());
     updateCheatButton();
     const target = targetIntake();
@@ -876,6 +914,9 @@
     toast.style.color = remaining < 0 ? '#991b1b' : '#065f46';
   }
   function renderStats() {
+    // 改过往日数据（补录/改运动/标放纵）会影响连续缺口，而那些路径只调 renderStats；
+    // 在这里顺手刷新今日页顶部的连胜横幅。
+    renderStreakBanner();
     const days = statsRange === 'week' ? 7 : 14;
     const bmr = profile ? profile.bmr : 0;
     const defaultExercise = profile ? profile.exercise : 0;

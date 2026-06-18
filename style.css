@@ -94,6 +94,26 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; padding-bottom: 40px; }
   text-align: center;
 }
 
+/* 连续热量缺口横幅（今日页顶部） */
+.streak-banner {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.5;
+  background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(234, 88, 12, 0.25);
+}
+.streak-banner b { font-size: 17px; font-weight: 800; }
+.streak-banner.zero {
+  background: #f0fdf4;
+  color: #15803d;
+  box-shadow: none;
+  border: 1px solid #bbf7d0;
+}
+
 /* 放纵日切换按钮（今日页） */
 .cheat-btn {
   display: block;
