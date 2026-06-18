@@ -60,6 +60,8 @@
   let midnightTimer = null;
   let currentDate = null;
   let aiEstimate = null;
+  // AI 估算待发送的图片，元素 { dataUrl }（data:image/...;base64,...）。
+  let aiImages = [];
   let exerciseSaveTimer = null;
   // 防抖窗口里待写的运动量 {date, value}；记下编辑时的日期，别用切换后的 currentDate。
   let pendingExerciseSave = null;
@@ -1406,14 +1408,113 @@
     if (editingFridgeId === item.id) resetFridgeForm();
     renderFridge();
   }
-  function resetAiPanel() {
+  // 只清掉上一次估算结果（结果区/推理/添加按钮），不动图片和报错。
+  function invalidateAiEstimate() {
     aiEstimate = null;
     $('#ai_result').classList.add('hidden');
     $('#ai_items').innerHTML = '';
     $('#ai_total').classList.add('hidden');
+    $('#ai_reasoning').classList.add('hidden');
+    $('#ai_reasoning_text').textContent = '';
     $('#addAiBtn').classList.add('hidden');
+  }
+  function resetAiPanel() {
+    invalidateAiEstimate();
     $('#ai_error').classList.add('hidden');
     $('#ai_error').textContent = '';
+  }
+  // 估算结果旁边展示「用了哪个模型 + 它是怎么算的」。
+  function renderAiReasoning(model, text) {
+    const box = $('#ai_reasoning');
+    if (!text) { box.classList.add('hidden'); return; }
+    $('#ai_model').textContent = model || '未知模型';
+    $('#ai_reasoning_text').textContent = text;
+    box.classList.remove('hidden');
+  }
+  // ---------- AI 图片输入 ----------
+  const MAX_AI_IMAGES = 4;
+  function renderAiThumbs() {
+    const wrap = $('#ai_thumbs');
+    wrap.innerHTML = '';
+    aiImages.forEach((img, idx) => {
+      const thumb = document.createElement('div');
+      thumb.className = 'ai-thumb';
+      const im = document.createElement('img');
+      im.src = img.dataUrl;
+      im.alt = '食物图片';
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'ai-thumb-remove';
+      rm.textContent = '×';
+      rm.setAttribute('aria-label', '移除图片');
+      rm.addEventListener('click', () => {
+        aiImages.splice(idx, 1);
+        renderAiThumbs();
+        invalidateAiEstimate();
+      });
+      thumb.appendChild(im);
+      thumb.appendChild(rm);
+      wrap.appendChild(thumb);
+    });
+  }
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('读取失败'));
+      reader.readAsDataURL(file);
+    });
+  }
+  async function addAiImageFiles(files) {
+    const imgs = Array.from(files || []).filter(f => f && f.type && f.type.startsWith('image/'));
+    if (imgs.length === 0) return;
+    let hitLimit = false;
+    for (const f of imgs) {
+      if (aiImages.length >= MAX_AI_IMAGES) { hitLimit = true; break; }
+      try {
+        const dataUrl = await fileToDataUrl(f);
+        aiImages.push({ dataUrl });
+      } catch (e) {
+        showAiError('图片读取失败：' + (e.message || e));
+      }
+    }
+    renderAiThumbs();
+    invalidateAiEstimate();
+    if (hitLimit) showAiError(`最多添加 ${MAX_AI_IMAGES} 张图片`);
+  }
+  async function handleAiPasteImageBtn() {
+    if (!navigator.clipboard || !navigator.clipboard.read) {
+      showAiError('当前浏览器不支持读取剪贴板，请直接用 Ctrl/⌘+V 粘贴');
+      return;
+    }
+    try {
+      const items = await navigator.clipboard.read();
+      const files = [];
+      for (const it of items) {
+        const type = it.types.find(t => t.startsWith('image/'));
+        if (type) {
+          const blob = await it.getType(type);
+          files.push(new File([blob], 'clipboard', { type }));
+        }
+      }
+      if (files.length === 0) { showAiError('剪贴板里没有图片'); return; }
+      addAiImageFiles(files);
+    } catch (e) {
+      showAiError('读取剪贴板失败：' + (e.message || e) + '（可改用 Ctrl/⌘+V）');
+    }
+  }
+  function handleAiPaste(e) {
+    if (inputMode !== 'ai') return;
+    const clip = e.clipboardData;
+    if (!clip || !clip.items) return;
+    const files = [];
+    for (const it of clip.items) {
+      if (it.kind === 'file' && it.type && it.type.startsWith('image/')) {
+        const f = it.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length) { e.preventDefault(); addAiImageFiles(files); }
   }
   function renderAiItems(items) {
     const ul = $('#ai_items');
@@ -1445,7 +1546,7 @@
   }
   async function handleEstimateAi() {
     const description = $('#ai_description').value.trim();
-    if (!description) { showAiError('请输入食物描述'); return; }
+    if (!description && aiImages.length === 0) { showAiError('请输入食物描述或添加图片'); return; }
     const btn = $('#estimateBtn');
     btn.disabled = true;
     const old = btn.textContent;
@@ -1453,7 +1554,7 @@
     $('#ai_error').classList.add('hidden');
     try {
       const { data, error } = await sb.functions.invoke('estimate-calories', {
-        body: { description },
+        body: { description, images: aiImages.map(i => i.dataUrl) },
       });
       if (error) {
         // Edge function returned non-2xx; try to read the structured error body for the detail
@@ -1489,6 +1590,7 @@
       }
       aiEstimate = { items };
       renderAiItems(items);
+      renderAiReasoning(data && data.model, data && (data.reasoning || data.raw));
       $('#ai_result').classList.remove('hidden');
       $('#addAiBtn').classList.remove('hidden');
     } catch (e) {
@@ -1515,6 +1617,8 @@
     btn.textContent = old;
     if (entries && entries.length > 0) {
       $('#ai_description').value = '';
+      aiImages = [];
+      renderAiThumbs();
       resetAiPanel();
       $('#ai_description').focus();
       renderToday();
@@ -1618,6 +1722,14 @@
       // 描述变了就清掉旧估算，避免误添加
       if (aiEstimate) resetAiPanel();
     });
+    $('#aiPickImageBtn').addEventListener('click', () => $('#ai_image_file').click());
+    $('#ai_image_file').addEventListener('change', (e) => {
+      addAiImageFiles(e.target.files);
+      e.target.value = '';
+    });
+    $('#aiPasteImageBtn').addEventListener('click', handleAiPasteImageBtn);
+    // 在 AI 模式下，Ctrl/⌘+V 直接把剪贴板里的图片塞进来
+    document.addEventListener('paste', handleAiPaste);
     const bdEx = $('#bdExerciseInput');
     bdEx.addEventListener('input', () => {
       const v = parseFloat(bdEx.value);

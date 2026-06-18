@@ -200,6 +200,15 @@
           <label>食物描述
             <input type="text" id="ai_description" placeholder="如：两个鸡腿，50g 巴沙鱼，一些蘑菇" />
           </label>
+          <div class="ai-image-input">
+            <div class="ai-image-actions">
+              <button type="button" class="ghost-btn" id="aiPickImageBtn">📷 从相册/图库</button>
+              <button type="button" class="ghost-btn" id="aiPasteImageBtn">📋 从剪贴板</button>
+            </div>
+            <input type="file" id="ai_image_file" accept="image/*" multiple hidden />
+            <div class="ai-thumbs" id="ai_thumbs"></div>
+            <p class="muted ai-image-hint">可选：选择食物图片，或直接 Ctrl/⌘+V 粘贴图片，配合文字一起估算</p>
+          </div>
           <button class="secondary-btn full-width" id="estimateBtn">AI 估算</button>
           <p class="ai-error error-text hidden" id="ai_error"></p>
           <div class="ai-result hidden" id="ai_result">
@@ -209,6 +218,10 @@
               <div class="ai-result-kcal"><span id="ai_kcal">--</span> 大卡</div>
             </div>
             <p class="muted ai-hint">AI 估算值，仅供参考</p>
+            <details class="ai-reasoning hidden" id="ai_reasoning" open>
+              <summary>模型推理 · <span id="ai_model">--</span></summary>
+              <div class="ai-reasoning-body" id="ai_reasoning_text"></div>
+            </details>
           </div>
           <button class="primary-btn hidden" id="addAiBtn">添加</button>
         </div>

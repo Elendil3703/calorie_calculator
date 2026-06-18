@@ -15,7 +15,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY')!;
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
-const MODEL = 'claude-opus-4-7';
+const MODEL = 'claude-opus-4-8';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -23,13 +23,16 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-const SYSTEM_PROMPT = `你是中餐为主的营养估算助手。用户用中文描述吃了什么，可能是单项也可能是多项食物（例如「一碗米饭」、「两个鸡腿，50g 巴沙鱼，一些蘑菇」、「一份红烧肉配米饭」），你需要把描述按每一项独立食物拆开，分别估算每一项的大卡数。
+const SYSTEM_PROMPT = `你是一个营养估算助手。用户用中文描述吃了什么，可能是单项也可能是多项食物（例如「一碗米饭」、「两个鸡腿，50g 巴沙鱼，一些蘑菇」、「一份红烧肉配米饭」），也可能附带食物照片。你需要把吃的东西按每一项独立食物拆开，分别估算每一项的大卡数。如果用户提供了图片，先识别图片里的食物，再结合用户的文字一起估算。
 
-严格按以下规则返回：
-- 只输出一个 JSON 对象，不要任何解释或额外文本
+请按以下两步输出：
+第一步：用中文写一段简要说明（推理过程），逐项讲清楚你是怎么估的——识别到的每一项食物、采用的份量假设、用到的 kcal/100g 或单位热量、以及最终大卡的算法。这段说明里不要出现大括号 { 或 }。
+第二步：另起一行，只输出一个 JSON 对象，这一行之后不要再有任何文字。
+
+JSON 严格按以下规则：
 - 格式：{"items": [{"name": "<含份量的食物名>", "calories": <整数>}, ...]}
 - 即使只有一项食物，items 也必须是数组（长度为 1）
-- 用户描述里的每一项独立食物各占数组中的一项
+- 吃的每一项独立食物各占数组中的一项
 - 每项的 name 要保留份量信息并使用自然中文（例如「两个鸡腿」、「50g 巴沙鱼」、「一些蘑菇」、「一碗米饭」），不要拆掉数量
 - 每项的 calories 是该项按用户描述的份量估算出的整数大卡数（不要写区间、不要带单位、不要带其他字段）
 - 严格按用户输入估算：用户写了什么就是什么，不要自行添加用户没有提到的食材、配菜、额外用油或调味，也不要自行删减用户写到的部分
@@ -73,12 +76,20 @@ serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const description = typeof body.description === 'string' ? body.description.trim() : '';
-    if (!description) {
-      return json({ error: '请输入食物描述' }, 400);
-    }
     if (description.length > 200) {
       return json({ error: '描述太长（最多 200 字）' }, 400);
     }
+
+    // 图片：前端传 data URL 字符串（data:image/jpeg;base64,...）或 {media_type, data}。
+    // 最多 4 张，单张 base64 体积上限 ~7M 字符（≈ 5MB 原图），超出的丢弃。
+    const images = buildImageBlocks(Array.isArray(body.images) ? body.images : []);
+    if (!description && images.length === 0) {
+      return json({ error: '请输入食物描述或添加图片' }, 400);
+    }
+
+    // 用户文字 + 图片一起发给模型；没文字时给一句兜底指令。
+    const userContent: unknown[] = [...images];
+    userContent.push({ type: 'text', text: description || '请识别图片中的食物并估算热量。' });
 
     const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -89,11 +100,11 @@ serve(async (req) => {
       },
       body: JSON.stringify({
         model: MODEL,
-        // 多项食物时返回的 JSON 比单项长不少（n 个 {name, calories} + items 包裹），
-        // 200 不够装 5+ 项；600 给 ~15 项留足余量。
-        max_tokens: 600,
+        // 现在要求模型先写推理再给 JSON，篇幅比纯 JSON 长不少；
+        // 1500 给推理 + ~15 项 JSON 留足余量。
+        max_tokens: 1500,
         system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: description }],
+        messages: [{ role: 'user', content: userContent }],
       }),
     });
 
@@ -158,7 +169,9 @@ serve(async (req) => {
       }, 502);
     }
 
-    return json({ items });
+    // 把 JSON 那段从回答里抠掉，剩下的就是模型的推理说明；前端展示「用了哪个模型 + 它怎么算的」。
+    const reasoning = text.replace(match[0], '').trim();
+    return json({ items, model: MODEL, reasoning, raw: text });
   } catch (e) {
     console.error('Unhandled error:', e);
     const err = e as Error;
@@ -168,6 +181,34 @@ serve(async (req) => {
     }, 500);
   }
 });
+
+// Anthropic 支持的图片类型；其它一律丢弃。
+const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+const MAX_IMAGES = 4;
+const MAX_IMAGE_CHARS = 7_000_000; // base64 字符上限，≈ 5MB 原图
+
+function buildImageBlocks(raw: unknown[]): unknown[] {
+  const blocks: unknown[] = [];
+  for (const item of raw) {
+    if (blocks.length >= MAX_IMAGES) break;
+    let mediaType = '';
+    let data = '';
+    if (typeof item === 'string') {
+      const m = item.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+      if (m) { mediaType = m[1].toLowerCase(); data = m[2]; }
+    } else if (item && typeof item === 'object') {
+      const obj = item as { media_type?: unknown; data?: unknown };
+      if (typeof obj.data === 'string') {
+        mediaType = String(obj.media_type || 'image/jpeg').toLowerCase();
+        data = obj.data;
+      }
+    }
+    if (!ALLOWED_IMAGE_TYPES.has(mediaType)) continue;
+    if (!data || data.length > MAX_IMAGE_CHARS) continue;
+    blocks.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data } });
+  }
+  return blocks;
+}
 
 function json(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), {
