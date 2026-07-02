@@ -42,6 +42,14 @@
   let profile = null;
   let deficit = DEFAULT_DEFICIT;
   let dailyExercise = 0;
+  // 本次登录内是否成功从 daily_exercise 读到过今天的值（或确认当天没行）。
+  // 读库失败时只有它为 false 才允许回落默认值——否则保持内存值不动，
+  // 避免一次超时的后台刷新把用户刚改的数字打回默认 800。
+  let dailyExerciseFresh = false;
+  // afterAuth 成功跑完的用户 id。supabase-js 在标签页重新聚焦时也会发
+  // SIGNED_IN，同一用户已加载就不用重跑 afterAuth（数据刷新交给
+  // visibilitychange），否则两份全量加载并发互相覆盖状态。
+  let appReadyUserId = null;
   let todayEntries = [];
   let historyData = {};
   // 过去 30 天的 daily_exercise 快照（没行 = 当天用 profile.exercise 默认值）。
@@ -79,9 +87,11 @@
   // 每日运动量：以 daily_exercise 表为唯一真相。
   //   - 当天没行 → 用 profile.exercise 默认值（也就是次日"自动回默认"的来源）
   //   - 当天有行 → 用那个值（跨设备/浏览器一致）
-  // 错误一律吞掉走默认值，避免表还没建好时整个 loadAll 挂掉。
+  // 返回 {ok:true, value|null} / {ok:false}。「没行」和「读失败」必须区分开：
+  // 之前两者都返回 null，一次超时的后台刷新就会把用户刚改的值打回默认 800，
+  // 而库里其实是对的（手动刷新才恢复）。读失败时调用方保留内存值即可。
   async function fetchDailyExerciseFromDb(date) {
-    if (!profile || !session) return null;
+    if (!profile || !session) return { ok: true, value: null };
     try {
       const { data, error } = await withTimeout(
         sb.from('daily_exercise')
@@ -93,12 +103,12 @@
         'fetchDailyExercise'
       );
       if (error) throw error;
-      if (!data) return null;
+      if (!data) return { ok: true, value: null };
       const v = Number(data.kcal);
-      return (isFinite(v) && v >= 0 && v <= MAX_PLAUSIBLE_EXERCISE) ? v : null;
+      return { ok: true, value: (isFinite(v) && v >= 0 && v <= MAX_PLAUSIBLE_EXERCISE) ? v : null };
     } catch (e) {
-      console.warn('[fetchDailyExercise] failed (falling back to default):', e);
-      return null;
+      console.warn('[fetchDailyExercise] failed (keeping current value):', e);
+      return { ok: false };
     }
   }
   async function saveDailyExerciseToDb(date, value) {
@@ -283,26 +293,31 @@
     const msg = String(e.message || e.error_description || e).toLowerCase();
     return /jwt|token|refresh|session|not authenticated|user.*not.*found|expired|unauthor/i.test(msg);
   }
-  // 重连/会话恢复失败时的终极兜底：清 sb-* + reload 一次。
+  // 重连/会话恢复失败时的终极兜底：reload 一次重建 supabase 客户端。
   // 为什么不能光 forceReauth？supabase 客户端实例内部可能挂着卡死的
   // refresh promise / navigator.locks 引用，光清 localStorage 不掉，
   // 下一次 signInWithPassword 也会被同一把卡死的锁拖垮——用户只能手动
   // 刷新整个页面才好。这里替用户做了那次刷新。
+  // purgeTokens：只有确定 token 本身坏了（401 类真·会话失效）才传 true 清
+  // sb-*。之前不管什么原因都清，慢网络下一次普通超时就变成
+  // 「页面自己刷新 + 还得重新登录」——超时 ≠ 会话坏，reload 后登录态要保留。
   // sessionStorage 标志防循环：reload 后还触发就只 cleanup 不 reload，
   // 调用方落回 forceReauth/showLogin。成功 init 时 clearInitWatchdog
   // 会顺手把这个标志清掉，下次出错才能再 reload 一次。
   // 返回 true = 即将 reload；false = 这次不 reload，调用方自行兜底。
-  function hardReset(reason) {
+  function hardReset(reason, purgeTokens) {
     console.warn('[hardReset]', reason);
     if (initWatchdog) { clearTimeout(initWatchdog); initWatchdog = null; }
-    try {
-      const keys = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith('sb-')) keys.push(k);
-      }
-      for (const k of keys) localStorage.removeItem(k);
-    } catch (_) {}
+    if (purgeTokens) {
+      try {
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('sb-')) keys.push(k);
+        }
+        for (const k of keys) localStorage.removeItem(k);
+      } catch (_) {}
+    }
     if (!sessionStorage.getItem('cc_emergency_reset')) {
       sessionStorage.setItem('cc_emergency_reset', '1');
       location.reload();
@@ -334,6 +349,8 @@
     userKey = null;
     profile = null;
     deficit = DEFAULT_DEFICIT;
+    dailyExerciseFresh = false;
+    appReadyUserId = null;
     if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
     showLogin(msg || '会话已过期，请重新登录');
   }
@@ -416,107 +433,120 @@
   }
 
   // ---------- Data ----------
-  async function loadAll() {
+  // 单飞：标签页重新聚焦时 SIGNED_IN 和 visibilitychange 可能同时触发全量
+  // 加载，两份并发跑谁后完成谁覆盖全局状态，失败的那份还会把好数据打回
+  // 默认值。in-flight 期间的新调用直接共用同一个 promise。
+  let loadAllInFlight = null;
+  function loadAll() {
+    if (!loadAllInFlight) {
+      loadAllInFlight = doLoadAll().finally(() => { loadAllInFlight = null; });
+    }
+    return loadAllInFlight;
+  }
+  async function doLoadAll() {
     // 先把还在防抖窗口里的运动量写库，否则下面 fetch 会读回旧值/默认值，
     // 把用户刚改还没落库的数字冲掉（切回前台 / 跨午夜刷新时最容易触发）。
     await flushPendingExerciseSave();
     currentDate = todayStr();
     const userId = session.user.id;
-    const exFromDb = await fetchDailyExerciseFromDb(currentDate);
-    dailyExercise = exFromDb != null ? exFromDb : (profile ? profile.exercise : 0);
+    const startStr = daysAgoStr(30);
 
-    const { data: settings, error: e1 } = await withTimeout(
-      sb.from('settings').select('threshold').eq('user_id', userId).maybeSingle(),
-      8000,
-      'loadAll/settings'
-    );
-    if (e1) throw e1;
-    const stored = settings != null ? Number(settings.threshold) : null;
+    // 所有查询并行发出。之前串行 8 个来回，慢网络下总耗时轻松超过启动
+    // watchdog 的窗口，被误判成"卡死"而清 token + reload——用户看到的就是
+    // 「打开没几秒页面自己刷新，还得重新登录」。
+    // settings / 今日 entries / 历史 entries 三个是硬依赖，失败让整个
+    // loadAll 抛出去；其余表（可能还没建好）失败吞掉走默认值。
+    const optional = (p, label) => p.catch(e => { console.warn(`[loadAll] ${label} failed:`, e); return null; });
+    const [exRes, settingsRes, entriesRes, histRes, hexRes, hdfRes, hcdRes, fridgeRes] = await Promise.all([
+      fetchDailyExerciseFromDb(currentDate), // 自带 try/catch，返回 {ok, value}
+      withTimeout(
+        sb.from('settings').select('threshold').eq('user_id', userId).maybeSingle(),
+        8000, 'loadAll/settings'
+      ),
+      withTimeout(
+        sb.from('entries').select('*').eq('date', currentDate).order('created_at', { ascending: false }),
+        8000, 'loadAll/entries'
+      ),
+      withTimeout(
+        sb.from('entries').select('date, calories').gte('date', startStr).lt('date', currentDate),
+        8000, 'loadAll/history'
+      ),
+      optional(withTimeout(
+        sb.from('daily_exercise').select('date, kcal').gte('date', startStr).lt('date', currentDate),
+        8000, 'loadAll/historyExercise'
+      ), 'historyExercise'),
+      optional(withTimeout(
+        sb.from('daily_deficit').select('date, kcal').gte('date', startStr).lte('date', currentDate),
+        8000, 'loadAll/historyDeficit'
+      ), 'historyDeficit'),
+      optional(withTimeout(
+        sb.from('cheat_days').select('date').gte('date', startStr).lte('date', currentDate),
+        8000, 'loadAll/cheatDays'
+      ), 'cheatDays'),
+      // fridge_items 表如果还没建好，PostgREST 会回 PGRST205/42P01，
+      // 不应拖垮整个 loadAll——其余功能（今日/统计）都能继续用。
+      optional(withTimeout(
+        sb.from('fridge_items').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+        8000, 'loadAll/fridge'
+      ), 'fridge'),
+    ]);
+    if (settingsRes.error) throw settingsRes.error;
+    if (entriesRes.error) throw entriesRes.error;
+    if (histRes.error) throw histRes.error;
+
+    if (exRes.ok) {
+      dailyExercise = exRes.value != null ? exRes.value : (profile ? profile.exercise : 0);
+      dailyExerciseFresh = true;
+    } else if (!dailyExerciseFresh) {
+      // 本次登录还没成功读到过，只能先用默认值
+      dailyExercise = profile ? profile.exercise : 0;
+    }
+    // else：这次读失败但内存里已是可信值（用户改过 / 之前读到过），保持不动
+
+    const stored = settingsRes.data != null ? Number(settingsRes.data.threshold) : null;
     deficit = (stored != null && isFinite(stored) && stored >= 0 && stored <= MAX_PLAUSIBLE_DEFICIT)
       ? stored
       : DEFAULT_DEFICIT;
 
-    const { data: entries, error: e2 } = await withTimeout(
-      sb.from('entries').select('*').eq('date', currentDate).order('created_at', { ascending: false }),
-      8000,
-      'loadAll/entries'
-    );
-    if (e2) throw e2;
-    todayEntries = entries || [];
+    todayEntries = entriesRes.data || [];
 
-    const startStr = daysAgoStr(30);
-    const { data: hist, error: e3 } = await withTimeout(
-      sb.from('entries').select('date, calories').gte('date', startStr).lt('date', currentDate),
-      8000,
-      'loadAll/history'
-    );
-    if (e3) throw e3;
     historyData = {};
-    for (const row of (hist || [])) {
+    for (const row of (histRes.data || [])) {
       historyData[row.date] = (historyData[row.date] || 0) + Number(row.calories);
     }
 
-    // 拉历史 daily_exercise / daily_deficit 快照。表可能还没建好（新 schema），
-    // 错误吞掉走默认值，整体 loadAll 不挂。
     historyExercise = {};
-    historyDeficit = {};
-    try {
-      const { data: hex, error: e4 } = await withTimeout(
-        sb.from('daily_exercise').select('date, kcal').gte('date', startStr).lt('date', currentDate),
-        8000,
-        'loadAll/historyExercise'
-      );
-      if (e4) throw e4;
-      for (const row of (hex || [])) historyExercise[row.date] = Number(row.kcal);
-    } catch (e) {
-      console.warn('[loadAll] historyExercise failed:', e);
+    if (hexRes && !hexRes.error) {
+      for (const row of (hexRes.data || [])) historyExercise[row.date] = Number(row.kcal);
+    } else if (hexRes) {
+      console.warn('[loadAll] historyExercise failed:', hexRes.error);
     }
-    try {
-      const { data: hdf, error: e5 } = await withTimeout(
-        sb.from('daily_deficit').select('date, kcal').gte('date', startStr).lte('date', currentDate),
-        8000,
-        'loadAll/historyDeficit'
-      );
-      if (e5) throw e5;
-      for (const row of (hdf || [])) historyDeficit[row.date] = Number(row.kcal);
-    } catch (e) {
-      console.warn('[loadAll] historyDeficit failed:', e);
+    historyDeficit = {};
+    if (hdfRes && !hdfRes.error) {
+      for (const row of (hdfRes.data || [])) historyDeficit[row.date] = Number(row.kcal);
+    } else if (hdfRes) {
+      console.warn('[loadAll] historyDeficit failed:', hdfRes.error);
     }
 
     // 放纵日集合：含今天（统计页不画今天，但今日页的按钮要回显状态）。
-    // 表可能还没建好，错误吞掉当作"没有放纵日"。
     cheatDays = new Set();
-    try {
-      const { data: hcd, error: e6 } = await withTimeout(
-        sb.from('cheat_days').select('date').gte('date', startStr).lte('date', currentDate),
-        8000,
-        'loadAll/cheatDays'
-      );
-      if (e6) throw e6;
-      for (const row of (hcd || [])) cheatDays.add(row.date);
-    } catch (e) {
-      console.warn('[loadAll] cheatDays failed:', e);
+    if (hcdRes && !hcdRes.error) {
+      for (const row of (hcdRes.data || [])) cheatDays.add(row.date);
+    } else if (hcdRes) {
+      console.warn('[loadAll] cheatDays failed:', hcdRes.error);
+    }
+
+    if (fridgeRes && !fridgeRes.error) {
+      fridgeItems = fridgeRes.data || [];
+    } else {
+      if (fridgeRes) console.warn('[loadAll/fridge] failed (treating as empty):', fridgeRes.error);
+      fridgeItems = [];
     }
 
     // 给今天 upsert 一个 deficit 快照，覆盖最新设定。改 deficit 也会走 saveDeficit 再写一次。
     if (historyDeficit[currentDate] !== deficit) {
       historyDeficit[currentDate] = deficit;
       saveDailyDeficitToDb(currentDate, deficit);
-    }
-
-    // fridge_items 表如果还没在 Supabase 里建好，PostgREST 会回 PGRST205/42P01。
-    // 那时整个 loadAll 不应该挂掉——其余功能（今日/统计）都能继续用。
-    try {
-      const { data: fridge, error: e4 } = await withTimeout(
-        sb.from('fridge_items').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-        8000,
-        'loadAll/fridge'
-      );
-      if (e4) throw e4;
-      fridgeItems = fridge || [];
-    } catch (e) {
-      console.warn('[loadAll/fridge] failed (treating as empty):', e);
-      fridgeItems = [];
     }
   }
 
@@ -1777,6 +1807,9 @@
       if (!isFinite(v) || v < 0) return;
       if (v > MAX_PLAUSIBLE_EXERCISE) return;
       dailyExercise = round1(v);
+      // 用户亲手输入的值和从库里读回的一样可信——后续哪次读库失败都不许
+      // 用默认值把它盖掉。
+      dailyExerciseFresh = true;
       // 防抖写库：每次按键改 in-memory + 进度条；攒够 EXERCISE_SAVE_DEBOUNCE_MS
       // 没新输入再 upsert，避免一串数字打出 5 次 PATCH。
       if (exerciseSaveTimer) clearTimeout(exerciseSaveTimer);
@@ -1831,13 +1864,16 @@
         await loadAll();
         renderAll();
       } catch (e) {
-        // 切回前台 loadAll 超时多半是 token 在后台被 rotate 出问题，
-        // 或锁被节流挂住——hardReset reload 替用户做手动刷新那一步，
-        // 重建 supabase 客户端丢掉所有卡死的内部状态。reload 用过一次
-        // 就只能落回 in-page forceReauth。
-        if (isAuthError(e) || e.__timeout) {
-          if (hardReset('visibilitychange/loadAll')) return;
-          await forceReauth('会话异常已重置，请重新登录');
+        // 超时 ≠ 会话坏了。标签页刚从后台唤醒时网络常常还没恢复，第一批
+        // fetch 挂掉很正常——屏幕上已有的数据照样可用（顶多旧几分钟），
+        // 保留现状，下次回前台自然会再刷。之前这里走 hardReset：
+        // 清 token + reload，把一次普通超时放大成「页面自己刷新还要重登」。
+        if (e && e.__timeout) {
+          console.warn('[visibilitychange] loadAll timeout (keeping stale UI):', e);
+          return;
+        }
+        if (isAuthError(e)) {
+          await forceReauth('会话已过期，请重新登录');
           return;
         }
         console.warn('[visibilitychange] loadAll failed:', e);
@@ -1853,21 +1889,33 @@
     profile = userKey ? USER_PROFILES[userKey] : null;
     try {
       await loadAll();
-      hideLogin();
-      renderAll();
-      scheduleMidnight();
     } catch (e) {
       console.warn('[afterAuth] loadAll failed:', e);
-      // 超时基本等于 token 坏了 / 锁卡死。光 forceReauth 清不掉 supabase 客户端
-      // 内部那些卡住的 promise/lock，下一次 signInWithPassword 也会被拖垮——
-      // 用户只能手动刷新。这里 hardReset 先 reload 一次替他做。
-      if (isAuthError(e) || e.__timeout) {
-        if (hardReset('afterAuth/loadAll')) return;
-        await forceReauth('会话异常已重置，请重新登录');
+      if (e && e.__timeout) {
+        // 超时 ≠ 会话坏了，多半只是慢网络/刚唤醒。先原地重试一次；
+        // 还不行才 reload 重建客户端（不清 token，登录态保留，刷新回来
+        // 大概率直接进应用而不是登录页）。
+        try {
+          await loadAll();
+        } catch (e2) {
+          console.warn('[afterAuth] retry failed:', e2);
+          if (hardReset('afterAuth/loadAll timeout', false)) return;
+          await forceReauth('加载反复超时，请重新登录');
+          return;
+        }
+      } else if (isAuthError(e)) {
+        await forceReauth('会话已过期，请重新登录');
+        return;
+      } else {
+        hideInitOverlay();
+        alert('加载数据失败：' + (e.message || e));
         return;
       }
-      alert('加载数据失败：' + (e.message || e));
     }
+    hideLogin();
+    renderAll();
+    scheduleMidnight();
+    appReadyUserId = session && session.user ? session.user.id : null;
   }
 
   // ---------- Init ----------
@@ -1904,15 +1952,18 @@
     loginBtn.disabled = true;
     loginBtn.textContent = '正在恢复会话…';
 
-    // 终极兜底：12 秒内启动流程没走到"登录页可见"或"今日页可见"任一稳定态，
-    // 就 hardReset（清 sb-* + reload 一次）。任何 await 卡死、forceReauth
-    // 自己也卡的极端组合都能救回来。
+    // 终极兜底：25 秒内启动流程没走到"登录页可见"或"今日页可见"任一稳定态，
+    // 就 hardReset（reload 一次，不清 token——慢加载 ≠ 会话坏了）。
+    // 任何 await 卡死、forceReauth 自己也卡的极端组合都能救回来。
+    // 窗口要给足：getSession 最多 6s + loadAll 并行批次 8s + 重试一轮 8s。
+    // 之前 12s 窗口在慢网络下会掐掉正常加载，还顺手清了 token，
+    // 表现为「打开没几秒页面自己刷新 + 要重新登录」。
     initWatchdog = setTimeout(() => {
-      if (hardReset('init/watchdog 12s')) return;
+      if (hardReset('init/watchdog 25s', false)) return;
       // 已经 reload 过一次还是死，让用户看到登录页手动重试。
       // showLogin 会一并藏掉 initOverlay 并把按钮放回可点状态。
       try { showLogin('启动反复失败，请检查网络或浏览器拦截'); } catch (_) {}
-    }, 12000);
+    }, 25000);
     function clearInitWatchdog() {
       if (initWatchdog) { clearTimeout(initWatchdog); initWatchdog = null; }
       sessionStorage.removeItem('cc_emergency_reset');
@@ -1920,8 +1971,12 @@
 
     sb.auth.onAuthStateChange(async (event, sess) => {
       if (event === 'SIGNED_IN' && sess) {
+        // supabase-js 在标签页重新聚焦时也会发 SIGNED_IN（不只是真登录）。
+        // 同一个用户已经加载过就只更新 session 引用，别重跑 afterAuth——
+        // 否则每次切回来都和 visibilitychange 的 loadAll 并发双跑。
+        const alreadyLoaded = appReadyUserId && sess.user && sess.user.id === appReadyUserId;
         session = sess;
-        await afterAuth();
+        if (!alreadyLoaded) await afterAuth();
         clearInitWatchdog();
       } else if ((event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && sess) {
         // 保持本地 session 引用新鲜，否则 session.access_token 会过期、
@@ -1933,6 +1988,8 @@
         userKey = null;
         profile = null;
         deficit = DEFAULT_DEFICIT;
+        dailyExerciseFresh = false;
+        appReadyUserId = null;
         if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
         showLogin();
         clearInitWatchdog();
@@ -1949,11 +2006,12 @@
       existing = r && r.data ? r.data.session : null;
     } catch (e) {
       console.warn('[init] getSession failed:', e);
-      // getSession 卡死/抛错 = 持久化 session 坏了。光 forceReauth 不够，
-      // supabase 客户端内部那个挂住的 refresh promise 还在，下一次
-      // signInWithPassword 也会被拖垮——hardReset reload 让客户端重建。
-      // reload 过一次还死才落回 in-page 重登。
-      if (hardReset('init/getSession')) return;
+      // getSession 抛错 = 持久化 session 坏了，清 token 重登；
+      // 只是超时的话多半是锁/网络卡住，token 本身没问题，reload 重建
+      // 客户端但保留登录态。光 forceReauth 不够——supabase 客户端内部
+      // 挂住的 refresh promise 还在，下一次 signInWithPassword 也会被
+      // 拖垮。reload 过一次还死才落回 in-page 重登。
+      if (hardReset('init/getSession', !e.__timeout)) return;
       await forceReauth(e.__timeout ? '会话异常已重置，请重新登录' : '会话已重置，请重新登录');
       clearInitWatchdog();
       return;
