@@ -1918,8 +1918,19 @@
       sessionStorage.removeItem('cc_emergency_reset');
     }
 
+    // 从 localStorage 恢复会话时 GoTrue 也会发一次 SIGNED_IN，而且是在 auth
+    // 客户端内部初始化的通知链里同步 await 回调的。如果这时直接 await
+    // afterAuth()，里面每个查询取 access token 都要 await getSession()，
+    // 而 getSession() 又在等初始化完成——互相等死。表现就是：每次刷新
+    // init/getSession 6 秒超时 → hardReset 把好端端的 token 清掉 → 重输密码。
+    // （supabase 官方文档也警告不要在 onAuthStateChange 回调里调用其他
+    // supabase 方法。）所以 init 阶段的会话恢复完全交给下面显式的
+    // getSession 分支处理，这里跳过；initSettled 置真之后（登录页可见 /
+    // 首屏加载启动）才响应真正由用户点登录触发的 SIGNED_IN。
+    let initSettled = false;
     sb.auth.onAuthStateChange(async (event, sess) => {
       if (event === 'SIGNED_IN' && sess) {
+        if (!initSettled) return;
         session = sess;
         await afterAuth();
         clearInitWatchdog();
@@ -1954,10 +1965,12 @@
       // signInWithPassword 也会被拖垮——hardReset reload 让客户端重建。
       // reload 过一次还死才落回 in-page 重登。
       if (hardReset('init/getSession')) return;
+      initSettled = true; // 放行登录页上用户手动登录触发的 SIGNED_IN
       await forceReauth(e.__timeout ? '会话异常已重置，请重新登录' : '会话已重置，请重新登录');
       clearInitWatchdog();
       return;
     }
+    initSettled = true;
     if (existing) {
       session = existing;
       await afterAuth();
