@@ -280,10 +280,13 @@
     if (!e) return false;
     const status = e.status || (e.context && e.context.status) || 0;
     if (status === 401 || status === 403) return true;
-    const msg = String(e.message || e.error_description || e).toLowerCase();
-    // jws：token 被损坏/篡改时 PostgREST 回 "JWSError JWSInvalidSignature"，
-    // 不含 jwt 字样，漏掉的话会走 alert 分支把用户卡在弹窗后面。
-    return /jwt|jws|token|refresh|session|not authenticated|user.*not.*found|expired|unauthor/i.test(msg);
+    // PostgrestError 没有 status 字段，401 的信息藏在 code/details 里：
+    // 坏 token 时是 {code:"PGRST301", details:"None of the keys was able to
+    // decode the JWT", message:"No suitable key or wrong key type"}——
+    // 光看 message 认不出来，把 code 和 details 也拼进来一起匹配。
+    const msg = [e.message, e.details, e.code, e.error_description]
+      .filter(Boolean).join(' ').toLowerCase() || String(e).toLowerCase();
+    return /pgrst30[12]|jwt|jws|token|refresh|session|not authenticated|user.*not.*found|expired|unauthor/i.test(msg);
   }
   // 重连/会话恢复失败时的终极兜底：清 sb-* + reload 一次。
   // 为什么不能光 forceReauth？supabase 客户端实例内部可能挂着卡死的
@@ -1868,6 +1871,9 @@
         await forceReauth('会话异常已重置，请重新登录');
         return;
       }
+      // 非 auth 错误也必须把 init 遮罩收掉，否则 alert 关掉后用户
+      // 永远停在「正在恢复会话」转圈圈上。
+      hideInitOverlay();
       alert('加载数据失败：' + (e.message || e));
     }
   }
