@@ -1,7 +1,7 @@
-/* 小猪彩蛋：几只小猪各自随机从页面四周（上下左右边缘）滑进来，整只停在屏幕内，
-   待几秒再缩回去。位置随机，但互相不重叠。
+/* 小猪彩蛋：每一轮所有小猪同时从页面四周（上下左右边缘）滑进来，整只停在屏幕内，
+   位置随机但互不重叠，待几秒后一起缩回去，隔一会儿再来下一轮。
    完全独立于 app.js —— 想整体移除时删掉 index.html 里对应的 <script> 即可。
-   PIGS 里每个图片各生成一只独立行动的小猪；数组留空则退回 🐷 emoji。 */
+   PIGS 里每个图片一只小猪；数组留空则退回 🐷 emoji。 */
 (() => {
   const PIGS = ['pig.png?v=20260707a', 'pig2.png?v=20260707c'];
 
@@ -47,19 +47,16 @@
     right: 'translateX(130%)',
   };
   const EDGES = ['top', 'right', 'bottom', 'left'];
-  const GAP = 24; // 两只小猪之间至少留的空隙 (px)
+  const GAP = 24; // 小猪之间至少留的空隙 (px)
 
   const rand = (a, b) => a + Math.random() * (b - a);
   const overlaps = (a, b) =>
     a.left < b.right + GAP && a.right > b.left - GAP &&
     a.top < b.bottom + GAP && a.bottom > b.top - GAP;
 
-  /* 所有小猪的登记表，用来做“随机但不重叠” */
-  const active = [];
-
-  function spawnPig(src, firstDelay) {
-    const pig = document.createElement('div');
-    pig.className = 'pig-sprite';
+  const sprites = (PIGS.length ? PIGS : ['']).map(src => {
+    const el = document.createElement('div');
+    el.className = 'pig-sprite';
     const inner = document.createElement('span');
     inner.className = 'pig-inner';
     if (src) {
@@ -70,21 +67,22 @@
     } else {
       inner.textContent = '🐷';
     }
-    pig.appendChild(inner);
-    document.body.appendChild(pig);
+    el.appendChild(inner);
+    document.body.appendChild(el);
+    return { el, edge: 'bottom' };
+  });
 
-    const me = { rect: null, visible: false };
-    active.push(me);
+  /* 一轮：给每只猪挑一个不和已挑位置重叠的随机位置，然后一起滑进来 */
+  function round() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const taken = [];
 
-    function showOnce() {
-      const w = pig.offsetWidth || 100;
-      const h = pig.offsetHeight || 100;
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-
-      /* 随机挑边和位置，撞上别的小猪就重挑几次 */
+    sprites.forEach((s, i) => {
+      const w = s.el.offsetWidth || 100;
+      const h = s.el.offsetHeight || 100;
       let edge, x, y, rect;
-      for (let attempt = 0; attempt < 12; attempt++) {
+      for (let attempt = 0; attempt < 20; attempt++) {
         edge = EDGES[Math.floor(Math.random() * EDGES.length)];
         if (edge === 'top' || edge === 'bottom') {
           x = rand(8, Math.max(9, vw - w - 8));
@@ -94,39 +92,33 @@
           y = rand(60, Math.max(61, vh - h - 8));
         }
         rect = { left: x, top: y, right: x + w, bottom: y + h };
-        if (!active.some(o => o !== me && o.visible && o.rect && overlaps(rect, o.rect))) break;
+        if (!taken.some(r => overlaps(rect, r))) break;
       }
-      me.rect = rect;
-      me.visible = true;
+      taken.push(rect);
+      s.edge = edge;
 
-      pig.style.top = y + 'px';
-      pig.style.left = x + 'px';
-      pig.style.right = pig.style.bottom = 'auto';
+      const el = s.el;
+      el.style.top = y + 'px';
+      el.style.left = x + 'px';
+      el.style.right = el.style.bottom = 'auto';
 
-      /* 先无动画地挪到屏幕外的起点，强制 reflow 后再开启过渡滑入到完全露出 */
-      pig.style.transition = 'none';
-      pig.style.transform = HIDDEN[edge];
-      pig.getBoundingClientRect();
-      pig.style.transition = '';
-      pig.style.transform = 'translate(0, 0)';
-
+      /* 先无动画地挪到屏幕外的起点，强制 reflow 后再滑入；
+         第二只略微晚一点点出发，更有生气但仍算“同时” */
+      el.style.transition = 'none';
+      el.style.transform = HIDDEN[edge];
+      el.getBoundingClientRect();
       setTimeout(() => {
-        pig.style.transform = HIDDEN[edge];
-        setTimeout(() => {
-          me.visible = false; // 完全缩回去了才让出位置
-          schedule();
-        }, 800);
-      }, rand(3000, 5000));
-    }
+        el.style.transition = '';
+        el.style.transform = 'translate(0, 0)';
+      }, 30 + i * 220);
+    });
 
-    function schedule() {
-      setTimeout(showOnce, rand(2500, 7000));
-    }
-
-    setTimeout(showOnce, firstDelay);
+    /* 待几秒后一起缩回，再排下一轮 */
+    setTimeout(() => {
+      sprites.forEach(s => { s.el.style.transform = HIDDEN[s.edge]; });
+      setTimeout(() => setTimeout(round, rand(2500, 7000)), 900);
+    }, rand(3200, 5500));
   }
 
-  if (PIGS.length === 0) PIGS.push('');
-  /* 错开出场时间，别两只同时冒出来 */
-  PIGS.forEach((src, i) => spawnPig(src, 1500 + i * 3000));
+  setTimeout(round, 1500);
 })();
