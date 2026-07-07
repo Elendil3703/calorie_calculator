@@ -21,8 +21,8 @@
       animation: pig-wiggle 1.6s ease-in-out infinite;
     }
     #pigSprite .pig-inner img {
-      width: 56px;
-      height: 56px;
+      width: 96px;
+      height: 96px;
       object-fit: contain;
       display: block;
     }
@@ -52,7 +52,7 @@
   pig.appendChild(inner);
   document.body.appendChild(pig);
 
-  /* 探头时露出约 2/3，缩回时整个移出屏幕外（fixed 元素不会撑出滚动条） */
+  /* 探头时几乎整只露出（只藏 8%），缩回时整个移出屏幕外（fixed 元素不会撑出滚动条） */
   const HIDDEN = {
     top: 'translateY(-120%)',
     bottom: 'translateY(120%)',
@@ -60,10 +60,10 @@
     right: 'translateX(120%)',
   };
   const PEEK = {
-    top: 'translateY(-30%)',
-    bottom: 'translateY(30%)',
-    left: 'translateX(-30%)',
-    right: 'translateX(30%)',
+    top: 'translateY(-8%)',
+    bottom: 'translateY(8%)',
+    left: 'translateX(-8%)',
+    right: 'translateX(8%)',
   };
   const EDGES = ['top', 'right', 'bottom', 'left'];
 
