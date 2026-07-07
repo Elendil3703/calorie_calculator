@@ -101,8 +101,9 @@
       return null;
     }
   }
+  // 返回是否写成功——flushPendingExerciseSave 靠它决定要不要保留待写值重试。
   async function saveDailyExerciseToDb(date, value) {
-    if (!session) return;
+    if (!session) return false;
     try {
       const { error } = await withTimeout(
         sb.from('daily_exercise').upsert({
@@ -115,9 +116,11 @@
         'saveDailyExercise'
       );
       if (error) throw error;
+      return true;
     } catch (e) {
       console.warn('[saveDailyExercise] failed:', e);
       if (isAuthError(e)) { await forceReauth('会话已过期，请重新登录'); }
+      return false;
     }
   }
   async function clearDailyExerciseInDb(date) {
@@ -191,12 +194,22 @@
 
   // 把还在防抖窗口里的待写值立刻冲到库里。失焦/关闭/切走/loadAll 前用。
   // 返回写库的 promise，调用方可以 await 它确保读回前已落库。
+  // 只有写成功才清掉 pending：会话过期/断网时（含 forceReauth 把 session 清成
+  // null 后 blur 再触发的那次 flush）值留在 pending 里，重新登录后 loadAll
+  // 会再 flush 一次把这笔修改补写进库——否则用户的修改会静默丢失。
   function flushPendingExerciseSave() {
     if (exerciseSaveTimer) { clearTimeout(exerciseSaveTimer); exerciseSaveTimer = null; }
-    if (!pendingExerciseSave) return Promise.resolve();
-    const { date, value } = pendingExerciseSave;
-    pendingExerciseSave = null;
-    return saveDailyExerciseToDb(date, value);
+    const snap = pendingExerciseSave;
+    if (!snap) return Promise.resolve();
+    // 防串号：重登成了另一个账号时丢弃上一个账号的待写值。
+    if (session && snap.userId && session.user.id !== snap.userId) {
+      if (pendingExerciseSave === snap) pendingExerciseSave = null;
+      return Promise.resolve();
+    }
+    return saveDailyExerciseToDb(snap.date, snap.value).then((ok) => {
+      // 期间用户又打了新值的话 pending 已被换成新快照，别误清。
+      if (ok && pendingExerciseSave === snap) pendingExerciseSave = null;
+    });
   }
 
   // ---------- Utils ----------
@@ -1787,7 +1800,11 @@
       if (exerciseSaveTimer) clearTimeout(exerciseSaveTimer);
       // 记下编辑时的日期+值，flushPendingExerciseSave 用这份快照写库——
       // 这样切回前台/跨午夜触发 loadAll 时能先把它落库再读回，不会被默认值冲掉。
-      pendingExerciseSave = { date: currentDate, value: dailyExercise };
+      pendingExerciseSave = {
+        date: currentDate,
+        value: dailyExercise,
+        userId: session && session.user ? session.user.id : null,
+      };
       exerciseSaveTimer = setTimeout(flushPendingExerciseSave, EXERCISE_SAVE_DEBOUNCE_MS);
       $('#bdTarget').textContent = round1(targetIntake());
       // 重算 summary + 进度条但不刷新输入框（用户正在打字）
