@@ -569,6 +569,7 @@
     return data;
   }
   async function removeEntry(id) {
+    const removed = todayEntries.find(e => e.id === id) || null;
     const { error } = await sb.from('entries').delete().eq('id', id);
     if (error) {
       if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return; }
@@ -577,6 +578,17 @@
     }
     todayEntries = todayEntries.filter(e => e.id !== id);
     renderToday();
+    // 这条记录来自开启了容量追踪的冰箱条目：把进度退回去（最低到 0——
+    // 如果这瓶在添加后已经归零换新，退到 0 就好，不往上一瓶倒推）。
+    if (removed && removed.fridge_item_id && Number(removed.amount_ml) > 0) {
+      const item = fridgeItems.find(it => it.id === removed.fridge_item_id);
+      const vol = volumeInfo(item);
+      if (vol) {
+        const newUsed = round1(Math.max(0, vol.used - Number(removed.amount_ml)));
+        const updated = await updateFridgeItem(item.id, { volume_used_ml: newUsed });
+        if (updated) renderFridge();
+      }
+    }
   }
   // ---- 往日详情弹窗用的 entries 读写。和今日的 addEntry/removeEntry 分开，
   //      因为这些操作针对任意一天，要顺手保持 todayEntries 同步（万一改的是今天）。
@@ -827,6 +839,39 @@
   function fridgeKcalLabel(item) {
     return `${round1(item.kcal)} 大卡 / ${FRIDGE_BASIS_LABEL[item.basis]}`;
   }
+  // 容量追踪：volume_total_ml > 0 = 开启。返回 {total, used}，未开启返回 null。
+  function volumeInfo(item) {
+    if (!item) return null;
+    const total = Number(item.volume_total_ml);
+    if (!isFinite(total) || total <= 0) return null;
+    let used = Number(item.volume_used_ml);
+    if (!isFinite(used) || used < 0) used = 0;
+    return { total, used };
+  }
+  function volumeText(vol) {
+    return `🥛 ${round1(vol.used)} / ${round1(vol.total)} ml`;
+  }
+  function buildVolumeProgress(vol) {
+    const wrap = document.createElement('div');
+    wrap.className = 'vol-track';
+    const bar = document.createElement('div');
+    bar.className = 'vol-bar';
+    const fill = document.createElement('div');
+    fill.className = 'vol-fill';
+    fill.style.width = Math.min(100, (vol.used / vol.total) * 100) + '%';
+    bar.appendChild(fill);
+    const text = document.createElement('div');
+    text.className = 'vol-text';
+    text.textContent = volumeText(vol);
+    wrap.appendChild(bar);
+    wrap.appendChild(text);
+    return wrap;
+  }
+  // 容量追踪只对「每 100g/ml」计量的条目有意义（每份的没有 ml 概念），
+  // 计量方式选每份时把输入框藏掉。
+  function updateVolumeFieldVisibility() {
+    $('#f_volume_label').classList.toggle('hidden', $('#f_basis').value !== 'per_100g');
+  }
   function renderFridge() {
     populateFridgePicker();
     const list = $('#fridgeList');
@@ -851,9 +896,22 @@
       detail.textContent = detailText;
       left.appendChild(name);
       left.appendChild(detail);
+      const vol = volumeInfo(item);
+      if (vol) left.appendChild(buildVolumeProgress(vol));
 
       const actions = document.createElement('div');
       actions.className = 'actions';
+      if (vol) {
+        const resetBtn = document.createElement('button');
+        resetBtn.className = 'edit';
+        resetBtn.textContent = '↺';
+        resetBtn.title = '进度归零（换新一瓶）';
+        resetBtn.addEventListener('click', async () => {
+          const updated = await updateFridgeItem(item.id, { volume_used_ml: 0 });
+          if (updated) renderFridge();
+        });
+        actions.appendChild(resetBtn);
+      }
       const editBtn = document.createElement('button');
       editBtn.className = 'edit';
       editBtn.textContent = '✎';
@@ -900,14 +958,15 @@
     updateFridgePickerInfo();
     updateFridgePreview();
   }
-  function showLastEntryToast(entry) {
+  function showLastEntryToast(entry, extraNote) {
     const total = entriesTotal(todayEntries);
     const remaining = targetIntake() - total;
     const toast = $('#lastEntryToast');
     const remText = remaining >= 0
       ? `剩余 ${round1(remaining)} 大卡。`
       : `已超出 ${round1(-remaining)} 大卡。`;
-    toast.innerHTML = `已添加 <b>${entry.name}</b>：${round1(entry.calories)} 大卡。今日累计 ${round1(total)} 大卡，${remText}`;
+    toast.innerHTML = `已添加 <b>${entry.name}</b>：${round1(entry.calories)} 大卡。今日累计 ${round1(total)} 大卡，${remText}`
+      + (extraNote ? `<br>${extraNote}` : '');
     toast.classList.remove('hidden');
     toast.style.background = remaining < 0 ? '#fef2f2' : '#ecfdf5';
     toast.style.borderColor = remaining < 0 ? '#fecaca' : '#a7f3d0';
@@ -1366,15 +1425,37 @@
       detail = `${round1(amount)}${unit} × ${round1(item.kcal)} 大卡/100${unit} · 来自冰箱`;
     }
     const payload = { name: item.name, calories: round1(kcal), mode: 'quantity', detail };
+    // 开启了容量追踪的条目：把本次的 ml/g 量和条目 id 记在 entry 上，
+    // 之后删除这条今日记录时能把进度退回去。
+    const vol = item.basis === 'per_100g' ? volumeInfo(item) : null;
+    if (vol) {
+      payload.fridge_item_id = item.id;
+      payload.amount_ml = round1(amount);
+    }
     btn.disabled = true; const old = btn.textContent; btn.textContent = '添加中…';
     const entry = await addEntry(payload);
     btn.disabled = false; btn.textContent = old;
     if (entry) {
+      let volNote = '';
+      if (vol) {
+        // 累加进度；达到总量取模归零（超出的部分算进下一瓶）。
+        let newUsed = round1(vol.used + round1(amount));
+        const finished = newUsed >= vol.total;
+        if (finished) newUsed = round1(newUsed % vol.total);
+        const updated = await updateFridgeItem(item.id, { volume_used_ml: newUsed });
+        if (updated) {
+          renderFridge();
+          const nv = volumeInfo(updated);
+          volNote = finished
+            ? `🥛 这瓶喝完啦，进度已归零${nv && nv.used > 0 ? `（新一瓶 ${volumeText(nv)}）` : ''}`
+            : `进度 ${volumeText(nv)}`;
+        }
+      }
       $('#q_fridge_amount').value = '';
       updateFridgePreview();
       $('#q_fridge_amount').focus();
       renderToday();
-      showLastEntryToast(entry);
+      showLastEntryToast(entry, volNote);
     }
   }
   function getSelectedFridgeItem() {
@@ -1399,6 +1480,8 @@
     }
     let text = `${item.name}：${fridgeKcalLabel(item)}`;
     if (item.expiry_date) text += ` · 过期 ${item.expiry_date}`;
+    const vol = volumeInfo(item);
+    if (vol) text += ` · ${volumeText(vol)}`;
     info.textContent = text;
     info.classList.add('has-pick');
     // 计量是「每份」时摄入量单位只能是"份"；是「100g/ml」时让用户在 g/ml 里选。
@@ -1421,7 +1504,9 @@
     $('#f_kcal').value = '';
     $('#f_unit').value = 'kj';
     $('#f_basis').value = 'per_serving';
+    $('#f_volume').value = '';
     $('#f_expiry').value = '';
+    updateVolumeFieldVisibility();
   }
   function enterFridgeEdit(item) {
     editingFridgeId = item.id;
@@ -1433,6 +1518,9 @@
     $('#f_kcal').value = round1(item.kcal);
     $('#f_unit').value = 'kcal';
     $('#f_basis').value = item.basis;
+    const vol = volumeInfo(item);
+    $('#f_volume').value = vol ? round1(vol.total) : '';
+    updateVolumeFieldVisibility();
     $('#f_expiry').value = item.expiry_date || '';
     $('#f_name').focus();
   }
@@ -1445,14 +1533,20 @@
     if (!name) { alert('请输入食物名称'); return; }
     if (!isFinite(rawKcal) || rawKcal <= 0) { alert('请输入有效的热量值'); return; }
     const kcal = round1(unit === 'kj' ? rawKcal * KJ_TO_KCAL : rawKcal);
+    // 容量追踪：只在 per_100g 计量下生效；留空/无效 = 不追踪，顺手把已喝量归零，
+    // 免得之后重新开启时冒出上一瓶的旧进度。
+    const rawVol = parseFloat($('#f_volume').value);
+    const volumeTotal = (basis === 'per_100g' && isFinite(rawVol) && rawVol > 0) ? round1(rawVol) : null;
     const btn = $('#addFridgeBtn');
     btn.disabled = true; const old = btn.textContent;
     btn.textContent = editingFridgeId ? '保存中…' : '添加中…';
     let ok = null;
     if (editingFridgeId) {
-      ok = await updateFridgeItem(editingFridgeId, { name, kcal, basis, expiry_date: expiry });
+      const patch = { name, kcal, basis, expiry_date: expiry, volume_total_ml: volumeTotal };
+      if (volumeTotal == null) patch.volume_used_ml = 0;
+      ok = await updateFridgeItem(editingFridgeId, patch);
     } else {
-      ok = await addFridgeItem({ name, kcal, basis, expiry_date: expiry });
+      ok = await addFridgeItem({ name, kcal, basis, expiry_date: expiry, volume_total_ml: volumeTotal });
     }
     btn.disabled = false; btn.textContent = old;
     if (ok) {
@@ -1772,6 +1866,7 @@
 
     $('#addFridgeBtn').addEventListener('click', handleAddOrSaveFridge);
     $('#cancelFridgeEditBtn').addEventListener('click', () => resetFridgeForm());
+    $('#f_basis').addEventListener('change', updateVolumeFieldVisibility);
     $('#estimateBtn').addEventListener('click', handleEstimateAi);
     $('#addAiBtn').addEventListener('click', handleAddAi);
     $('#ai_description').addEventListener('keydown', (e) => {

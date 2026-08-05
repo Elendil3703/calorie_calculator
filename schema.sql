@@ -96,3 +96,18 @@ alter table public.cheat_days enable row level security;
 
 create policy "cheat_days_own" on public.cheat_days
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- 冰箱条目容量追踪（场景：一瓶 2L lite 牛奶常驻冰箱）。
+--   volume_total_ml 非空 = 开启追踪（一瓶总量，ml/g）；
+--   volume_used_ml  = 当前这瓶已喝掉的量，前端每次「从冰箱选择」添加时累加，
+--   达到总量后取模归零（进入下一瓶）。
+-- entries 上的两列是反向链接：删除今日记录时按 amount_ml 把进度退回去；
+-- 冰箱条目被删则 fridge_item_id 置空，历史记录保留。
+-- （已作为 supabase/migrations/20260805000000_milk_volume_tracking.sql 应用）
+alter table public.fridge_items
+  add column if not exists volume_total_ml numeric,
+  add column if not exists volume_used_ml numeric not null default 0;
+
+alter table public.entries
+  add column if not exists fridge_item_id uuid references public.fridge_items(id) on delete set null,
+  add column if not exists amount_ml numeric;
