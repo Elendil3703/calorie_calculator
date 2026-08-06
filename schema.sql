@@ -114,7 +114,12 @@ alter table public.entries
 
 -- 体重目标：设置页维护当前体重 / 目标体重，主页按 7700 大卡 ≈ 1kg 脂肪
 -- 估算距目标体重还需的热量缺口。可空 = 用户还没设置。
--- （已作为 supabase/migrations/20260806000000_weight_goal.sql 应用）
+-- weight_set_date 是体重锚点日期：缺口从这天起按每日已实现的缺口自动扣减，
+-- 更新当前体重时前端把它重置为当天（只改目标体重不动锚点、保留进度）。
+-- （已作为 supabase/migrations/20260806000000_weight_goal.sql
+--   和 20260806100000_weight_anchor.sql 应用，后者还给 CJ 种了
+--   2026-08-06 起算 78.4 kg 的初始锚点）
 alter table public.settings
   add column if not exists weight_current numeric,
-  add column if not exists weight_target numeric;
+  add column if not exists weight_target numeric,
+  add column if not exists weight_set_date date;

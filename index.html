@@ -314,7 +314,7 @@
 
       <div class="card">
         <h3>体重目标</h3>
-        <p class="muted">主页按 7700 大卡 ≈ 1 kg 估算距离目标体重还需的热量缺口。减了体重记得回来更新当前体重。</p>
+        <p class="muted">主页按 7700 大卡 ≈ 1 kg 估算距离目标体重还需的热量缺口，并从设定当前体重那天起按每日记录自动扣减（盈余日会加回去）。更新当前体重会从当天重新起算。</p>
         <div class="row">
           <label class="flex">当前体重
             <input type="number" id="weightCurrentInput" inputmode="decimal" step="0.1" min="0" />
@@ -384,7 +384,7 @@
        GH Pages 不发严格的 Cache-Control，浏览器会用启发式缓存策略，
        第二次打开常常直接读磁盘里的老 app.js，让线上 fix 看起来"没生效"。
        每次 app.js 有实质性改动就把版本号往上推一档。 -->
-  <script src="app.js?v=20260806a"></script>
+  <script src="app.js?v=20260806b"></script>
   <script src="pig.js?v=20260707f"></script>
 </body>
 </html>
