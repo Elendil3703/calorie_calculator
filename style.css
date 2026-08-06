@@ -94,8 +94,8 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; padding-bottom: 40px; }
   text-align: center;
 }
 
-/* 连续热量缺口横幅（今日页顶部） */
-.streak-banner {
+/* 距目标体重横幅（今日页顶部） */
+.goal-banner {
   margin-bottom: 12px;
   padding: 10px 14px;
   border-radius: 12px;
@@ -106,8 +106,8 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; padding-bottom: 40px; }
   color: #fff;
   box-shadow: 0 2px 8px rgba(234, 88, 12, 0.25);
 }
-.streak-banner b { font-size: 17px; font-weight: 800; }
-.streak-banner.zero {
+.goal-banner b { font-size: 17px; font-weight: 800; }
+.goal-banner.zero {
   background: #f0fdf4;
   color: #15803d;
   box-shadow: none;

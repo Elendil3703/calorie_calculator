@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>卡路里计算器</title>
-  <link rel="stylesheet" href="style.css?v=20260805a" />
+  <link rel="stylesheet" href="style.css?v=20260806a" />
   <style>
     /* 会话恢复中遮罩。HTML 默认就显示，确保 first-paint 那一刻就盖住所有界面，
        app.js 还没跑起来时也阻止用户点登录按钮跟后台 init 抢 auth lock。
@@ -76,7 +76,7 @@
   <main>
     <!-- 今日 -->
     <section id="tab-today" class="tab-panel active">
-      <div class="streak-banner hidden" id="streakBanner"></div>
+      <div class="goal-banner hidden" id="goalBanner"></div>
       <div class="date-line" id="dateLine">--</div>
 
       <div class="summary-card">
@@ -313,6 +313,24 @@
       </div>
 
       <div class="card">
+        <h3>体重目标</h3>
+        <p class="muted">主页按 7700 大卡 ≈ 1 kg 估算距离目标体重还需的热量缺口。减了体重记得回来更新当前体重。</p>
+        <div class="row">
+          <label class="flex">当前体重
+            <input type="number" id="weightCurrentInput" inputmode="decimal" step="0.1" min="0" />
+          </label>
+          <span class="kcal-suffix">kg</span>
+        </div>
+        <div class="row">
+          <label class="flex">目标体重
+            <input type="number" id="weightTargetInput" inputmode="decimal" step="0.1" min="0" />
+          </label>
+          <span class="kcal-suffix">kg</span>
+        </div>
+        <button class="primary-btn" id="saveWeightBtn">保存</button>
+      </div>
+
+      <div class="card">
         <h3>身体数据</h3>
         <p class="muted" id="settingsBodyInfo">--</p>
         <ul class="breakdown">
@@ -366,7 +384,7 @@
        GH Pages 不发严格的 Cache-Control，浏览器会用启发式缓存策略，
        第二次打开常常直接读磁盘里的老 app.js，让线上 fix 看起来"没生效"。
        每次 app.js 有实质性改动就把版本号往上推一档。 -->
-  <script src="app.js?v=20260805a"></script>
+  <script src="app.js?v=20260806a"></script>
   <script src="pig.js?v=20260707f"></script>
 </body>
 </html>

@@ -18,7 +18,7 @@
   // 写死的身体数据 / 每日基础支出 / 计划运动量（默认值）。
   // CJ 的 BMR 1900 来自手表实测；Katrina 1358 由 Mifflin-St Jeor 公式算得。
   const USER_PROFILES = {
-    cj:      { gender: '男', age: 22, height: 176, weight: 79, bmr: 1900, exercise: 800 },
+    cj:      { gender: '男', age: 22, height: 177, weight: 78.4, bmr: 1900, exercise: 800 },
     katrina: { gender: '女', age: 25, height: 167, weight: 60, bmr: 1358, exercise: 350 },
   };
   const EMAIL_TO_USER = {};
@@ -28,6 +28,12 @@
   // settings.threshold 列被复用为「热量缺口」；老数据通常是 1500+ 的摄入阈值，遇到就回退默认值。
   const MAX_PLAUSIBLE_DEFICIT = 1500;
   const MAX_PLAUSIBLE_EXERCISE = 3000;
+  // 减 1kg 体重 ≈ 7700 大卡缺口（脂肪组织约 87% 纯脂肪 × 9 kcal/g）。
+  // 民间常说的 7000 是四舍五入版，这里用文献值。
+  const KCAL_PER_KG = 7700;
+  // 体重输入的合理范围（kg），超出按无效处理。
+  const MIN_PLAUSIBLE_WEIGHT = 20;
+  const MAX_PLAUSIBLE_WEIGHT = 400;
   const KJ_TO_KCAL = 1 / 4.184;
   const LAST_LOGIN_KEY = 'calorie_calc_last_login_user';
   // 用户改运动量时，每按一下键都打一次库太浪费——攒 600ms 没新输入再写。
@@ -41,6 +47,10 @@
   let userKey = null;
   let profile = null;
   let deficit = DEFAULT_DEFICIT;
+  // 体重目标（settings.weight_current / weight_target）。null = 还没设置；
+  // 当前体重没设置时横幅回退用 profile.weight。
+  let weightCurrent = null;
+  let weightTarget = null;
   let dailyExercise = 0;
   let todayEntries = [];
   let historyData = {};
@@ -257,6 +267,12 @@
     return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
   }
   function round1(n) { return Math.round(n * 10) / 10; }
+  // 库里 / 输入框里的体重值：合理范围内返回数值，否则 null（当"没设置"处理）。
+  function plausibleWeight(v) {
+    if (v == null || v === '') return null;
+    const n = Number(v);
+    return (isFinite(n) && n >= MIN_PLAUSIBLE_WEIGHT && n <= MAX_PLAUSIBLE_WEIGHT) ? n : null;
+  }
   function formatSignedKcal(v) {
     const r = round1(v);
     if (r === 0) return '0';
@@ -352,6 +368,8 @@
     userKey = null;
     profile = null;
     deficit = DEFAULT_DEFICIT;
+    weightCurrent = null;
+    weightTarget = null;
     if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
     showLogin(msg || '会话已过期，请重新登录');
   }
@@ -444,7 +462,7 @@
     dailyExercise = exFromDb != null ? exFromDb : (profile ? profile.exercise : 0);
 
     const { data: settings, error: e1 } = await withTimeout(
-      sb.from('settings').select('threshold').eq('user_id', userId).maybeSingle(),
+      sb.from('settings').select('threshold, weight_current, weight_target').eq('user_id', userId).maybeSingle(),
       8000,
       'loadAll/settings'
     );
@@ -453,6 +471,8 @@
     deficit = (stored != null && isFinite(stored) && stored >= 0 && stored <= MAX_PLAUSIBLE_DEFICIT)
       ? stored
       : DEFAULT_DEFICIT;
+    weightCurrent = settings ? plausibleWeight(settings.weight_current) : null;
+    weightTarget = settings ? plausibleWeight(settings.weight_target) : null;
 
     const { data: entries, error: e2 } = await withTimeout(
       sb.from('entries').select('*').eq('date', currentDate).order('created_at', { ascending: false }),
@@ -653,6 +673,26 @@
     return true;
   }
 
+  // 体重目标：和 deficit 存同一行 settings。threshold 一并带上，
+  // 免得首次 upsert（行还不存在）时落成列默认值 2000。
+  async function saveWeights(current, target) {
+    const { error } = await sb.from('settings').upsert({
+      user_id: session.user.id,
+      threshold: deficit,
+      weight_current: current,
+      weight_target: target,
+      updated_at: new Date().toISOString(),
+    });
+    if (error) {
+      if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return false; }
+      alert('保存失败：' + error.message);
+      return false;
+    }
+    weightCurrent = current;
+    weightTarget = target;
+    return true;
+  }
+
   // ---------- Fridge ----------
   async function addFridgeItem(payload) {
     payload.user_id = session.user.id;
@@ -731,45 +771,32 @@
     await setCheatDayInDb(date, on);
     renderStats();
   }
-  // 连续热量缺口：从昨天往前数（和统计页一样不含今天——今天还没过完，
-  // 谈不上"已经实现"）。遇到放纵日 / 没记录的日子 / 当天没实现缺口（盈余或持平）
-  // 就停，周期即"从上一个放纵日或缺失日之后开始"。历史只加载过去 30 天，最多数到 30。
-  function computeDeficitStreak() {
-    if (!profile) return { days: 0, totalDeficit: 0 };
-    const bmr = profile.bmr;
-    const defaultExercise = profile.exercise || 0;
-    let days = 0;
-    let totalDeficit = 0;
-    for (let i = 1; i <= 30; i++) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      if (cheatDays.has(dateStr)) break;       // 放纵日：周期到此为止
-      const total = historyData[dateStr] || 0;
-      if (total <= 0) break;                    // 缺失的日期：没记录就断
-      const dExercise = historyExercise[dateStr] != null ? historyExercise[dateStr] : defaultExercise;
-      const dayDeficit = (bmr + dExercise) - total;  // 消耗 − 摄入
-      if (dayDeficit <= 0) break;               // 当天没实现缺口（盈余/持平）
-      days++;
-      totalDeficit += dayDeficit;
-    }
-    return { days, totalDeficit };
-  }
-  function renderStreakBanner() {
-    const el = $('#streakBanner');
+  // 距目标体重横幅：还需缺口 = (当前体重 − 目标体重) × KCAL_PER_KG。
+  // 当前体重没在设置里填过就回退到 profile 里的静态体重；
+  // 目标体重没设置就提示去设置页填。
+  function renderGoalBanner() {
+    const el = $('#goalBanner');
     if (!el) return;
-    const { days, totalDeficit } = computeDeficitStreak();
-    if (days >= 1) {
-      el.classList.remove('zero');
-      el.innerHTML = `🔥 已连续 <b>${days}</b> 天实现热量缺口，累计缺口 <b>${round1(totalDeficit)}</b> 大卡，继续保持！`;
-    } else {
+    const current = weightCurrent != null ? weightCurrent : (profile ? profile.weight : null);
+    if (current == null || weightTarget == null) {
       el.classList.add('zero');
-      el.innerHTML = `🍃 还没有连续的热量缺口，从今天开始积累吧！`;
+      el.innerHTML = '🎯 在「设置」里填写当前体重和目标体重，这里会显示距离目标还需的热量缺口';
+    } else if (current <= weightTarget) {
+      el.classList.add('zero');
+      el.innerHTML = `🎉 已达到目标体重 <b>${round1(weightTarget)}</b> kg，继续保持！`;
+    } else {
+      el.classList.remove('zero');
+      const gapKg = current - weightTarget;
+      const gapKcal = gapKg * KCAL_PER_KG;
+      const daysLeft = deficit > 0 ? Math.ceil(gapKcal / deficit) : 0;
+      el.innerHTML = `🎯 距离目标体重 <b>${round1(weightTarget)}</b> kg 还有 <b>${round1(gapKg)}</b> kg`
+        + `，需要缺口 <b>${Math.round(gapKcal)}</b> 大卡`
+        + (daysLeft > 0 ? `<br>按每日缺口 ${round1(deficit)} 大卡，约还需 <b>${daysLeft}</b> 天` : '');
     }
     el.classList.remove('hidden');
   }
   function renderToday() {
-    renderStreakBanner();
+    renderGoalBanner();
     $('#dateLine').textContent = formatDateLong(currentDate || todayStr());
     updateCheatButton();
     const target = targetIntake();
@@ -991,9 +1018,6 @@
     toast.style.color = remaining < 0 ? '#991b1b' : '#065f46';
   }
   function renderStats() {
-    // 改过往日数据（补录/改运动/标放纵）会影响连续缺口，而那些路径只调 renderStats；
-    // 在这里顺手刷新今日页顶部的连胜横幅。
-    renderStreakBanner();
     const days = statsRange === 'week' ? 7 : 14;
     const bmr = profile ? profile.bmr : 0;
     const defaultExercise = profile ? profile.exercise : 0;
@@ -1148,6 +1172,15 @@
   }
   function renderSettings() {
     $('#deficitInput').value = round1(deficit);
+    const wcInput = $('#weightCurrentInput');
+    const wtInput = $('#weightTargetInput');
+    if (document.activeElement !== wcInput) {
+      wcInput.value = weightCurrent != null ? round1(weightCurrent) : '';
+    }
+    if (document.activeElement !== wtInput) {
+      wtInput.value = weightTarget != null ? round1(weightTarget) : '';
+    }
+    if (profile) wcInput.placeholder = String(round1(profile.weight));
     if (profile) {
       $('#settingsBmr').textContent = round1(profile.bmr);
       const exLabel = round1(profile.exercise);
@@ -1157,8 +1190,9 @@
         : `${exNow}（默认 ${exLabel}）`;
       $('#settingsDeficit').textContent = round1(deficit);
       $('#settingsTarget').textContent = round1(targetIntake());
+      const shownWeight = weightCurrent != null ? weightCurrent : profile.weight;
       $('#settingsBodyInfo').textContent =
-        `${profile.gender} · ${profile.age} 岁 · ${profile.height} cm · ${profile.weight} kg`;
+        `${profile.gender} · ${profile.age} 岁 · ${profile.height} cm · ${shownWeight} kg`;
     }
   }
 
@@ -1942,6 +1976,17 @@
       btn.disabled = false; btn.textContent = old;
       if (ok) { renderToday(); renderStats(); renderSettings(); alert('已保存'); }
     });
+    $('#saveWeightBtn').addEventListener('click', async () => {
+      const cur = plausibleWeight($('#weightCurrentInput').value);
+      const tgt = plausibleWeight($('#weightTargetInput').value);
+      if (cur == null) { alert('请输入有效的当前体重（kg）'); return; }
+      if (tgt == null) { alert('请输入有效的目标体重（kg）'); return; }
+      const btn = $('#saveWeightBtn');
+      btn.disabled = true; const old = btn.textContent; btn.textContent = '保存中…';
+      const ok = await saveWeights(round1(cur), round1(tgt));
+      btn.disabled = false; btn.textContent = old;
+      if (ok) { renderToday(); renderSettings(); alert('已保存'); }
+    });
     document.addEventListener('visibilitychange', async () => {
       if (document.hidden || !session) return;
       try {
@@ -2064,6 +2109,8 @@
         userKey = null;
         profile = null;
         deficit = DEFAULT_DEFICIT;
+        weightCurrent = null;
+        weightTarget = null;
         if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
         showLogin();
         clearInitWatchdog();

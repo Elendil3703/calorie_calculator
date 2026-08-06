@@ -111,3 +111,10 @@ alter table public.fridge_items
 alter table public.entries
   add column if not exists fridge_item_id uuid references public.fridge_items(id) on delete set null,
   add column if not exists amount_ml numeric;
+
+-- 体重目标：设置页维护当前体重 / 目标体重，主页按 7700 大卡 ≈ 1kg 脂肪
+-- 估算距目标体重还需的热量缺口。可空 = 用户还没设置。
+-- （已作为 supabase/migrations/20260806000000_weight_goal.sql 应用）
+alter table public.settings
+  add column if not exists weight_current numeric,
+  add column if not exists weight_target numeric;
