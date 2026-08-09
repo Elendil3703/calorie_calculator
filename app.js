@@ -78,6 +78,9 @@
   let exerciseSaveTimer = null;
   // 防抖窗口里待写的运动量 {date, value}；记下编辑时的日期，别用切换后的 currentDate。
   let pendingExerciseSave = null;
+  // dailyExercise 当前值对应的日期。daily_exercise 查询失败时靠它判断
+  // 内存值是不是今天的：是就保留别动，不是（刚刷新/跨午夜）才回落默认。
+  let exerciseLoadedDate = null;
   let fridgeItems = [];
   // null = 添加模式；非 null = 正在编辑那一项 id
   let editingFridgeId = null;
@@ -90,11 +93,13 @@
     return profile.bmr + dailyExercise - deficit;
   }
   // 每日运动量：以 daily_exercise 表为唯一真相。
-  //   - 当天没行 → 用 profile.exercise 默认值（也就是次日"自动回默认"的来源）
+  //   - 当天没行（返回 null）→ 用 profile.exercise 默认值（也就是次日"自动回默认"的来源）
   //   - 当天有行 → 用那个值（跨设备/浏览器一致）
-  // 错误一律吞掉走默认值，避免表还没建好时整个 loadAll 挂掉。
+  //   - 查询失败（返回 undefined）→ 和"没行"必须区分开：失败不代表该回默认，
+  //     否则断网/超时时用户改过的值会被默认值冲掉显示。
+  // 错误吞掉不抛，避免表还没建好时整个 loadAll 挂掉。
   async function fetchDailyExerciseFromDb(date) {
-    if (!profile || !session) return null;
+    if (!profile || !session) return undefined;
     try {
       const { data, error } = await withTimeout(
         sb.from('daily_exercise')
@@ -110,8 +115,8 @@
       const v = Number(data.kcal);
       return (isFinite(v) && v >= 0 && v <= MAX_PLAUSIBLE_EXERCISE) ? v : null;
     } catch (e) {
-      console.warn('[fetchDailyExercise] failed (falling back to default):', e);
-      return null;
+      console.warn('[fetchDailyExercise] failed:', e);
+      return undefined;
     }
   }
   // 返回是否写成功——flushPendingExerciseSave 靠它决定要不要保留待写值重试。
@@ -205,6 +210,35 @@
     }
   }
 
+  // 待写运动量同步存 localStorage：hardReset/手动刷新会重载页面，内存里的
+  // pending 会丢；存本地才能在重载 + 重新登录后由 loadAll 补写进库。
+  // key 不带 sb- 前缀，hardReset/forceReauth 清会话时不会误删。
+  const PENDING_EXERCISE_KEY = 'cc-pending-exercise';
+  function persistPendingExerciseSave() {
+    try {
+      if (pendingExerciseSave) {
+        localStorage.setItem(PENDING_EXERCISE_KEY, JSON.stringify(pendingExerciseSave));
+      } else {
+        localStorage.removeItem(PENDING_EXERCISE_KEY);
+      }
+    } catch (_) {}
+  }
+  function restorePendingExerciseSave() {
+    if (pendingExerciseSave) return; // 内存里的更新，别被旧存档覆盖
+    try {
+      const raw = localStorage.getItem(PENDING_EXERCISE_KEY);
+      if (!raw) return;
+      const snap = JSON.parse(raw);
+      const v = Number(snap && snap.value);
+      const valid = snap &&
+        /^\d{4}-\d{2}-\d{2}$/.test(String(snap.date || '')) &&
+        isFinite(v) && v >= 0 && v <= MAX_PLAUSIBLE_EXERCISE &&
+        session && snap.userId === session.user.id;
+      if (!valid) { localStorage.removeItem(PENDING_EXERCISE_KEY); return; }
+      pendingExerciseSave = { date: snap.date, value: v, userId: snap.userId };
+    } catch (_) {}
+  }
+
   // 把还在防抖窗口里的待写值立刻冲到库里。失焦/关闭/切走/loadAll 前用。
   // 返回写库的 promise，调用方可以 await 它确保读回前已落库。
   // 只有写成功才清掉 pending：会话过期/断网时（含 forceReauth 把 session 清成
@@ -216,12 +250,12 @@
     if (!snap) return Promise.resolve();
     // 防串号：重登成了另一个账号时丢弃上一个账号的待写值。
     if (session && snap.userId && session.user.id !== snap.userId) {
-      if (pendingExerciseSave === snap) pendingExerciseSave = null;
+      if (pendingExerciseSave === snap) { pendingExerciseSave = null; persistPendingExerciseSave(); }
       return Promise.resolve();
     }
     return saveDailyExerciseToDb(snap.date, snap.value).then((ok) => {
       // 期间用户又打了新值的话 pending 已被换成新快照，别误清。
-      if (ok && pendingExerciseSave === snap) pendingExerciseSave = null;
+      if (ok && pendingExerciseSave === snap) { pendingExerciseSave = null; persistPendingExerciseSave(); }
     });
   }
 
@@ -459,11 +493,26 @@
   async function loadAll() {
     // 先把还在防抖窗口里的运动量写库，否则下面 fetch 会读回旧值/默认值，
     // 把用户刚改还没落库的数字冲掉（切回前台 / 跨午夜刷新时最容易触发）。
+    restorePendingExerciseSave();
     await flushPendingExerciseSave();
     currentDate = todayStr();
     const userId = session.user.id;
     const exFromDb = await fetchDailyExerciseFromDb(currentDate);
-    dailyExercise = exFromDb != null ? exFromDb : (profile ? profile.exercise : 0);
+    // 优先级：今天的待写值（上面 flush 失败时还留着，是用户最新的修改）
+    //   > 库里读到的结果（null = 没行，回默认）
+    //   > 查询失败：内存值是今天的就保留，否则（刚刷新/跨午夜）只能回默认。
+    const pendingToday = (pendingExerciseSave &&
+        pendingExerciseSave.date === currentDate &&
+        (!pendingExerciseSave.userId || pendingExerciseSave.userId === userId))
+      ? pendingExerciseSave.value : null;
+    if (pendingToday != null) {
+      dailyExercise = pendingToday;
+    } else if (exFromDb !== undefined) {
+      dailyExercise = exFromDb != null ? exFromDb : (profile ? profile.exercise : 0);
+    } else if (exerciseLoadedDate !== currentDate) {
+      dailyExercise = profile ? profile.exercise : 0;
+    }
+    exerciseLoadedDate = currentDate;
 
     const { data: settings, error: e1 } = await withTimeout(
       sb.from('settings').select('threshold, weight_current, weight_target, weight_set_date').eq('user_id', userId).maybeSingle(),
@@ -1986,6 +2035,7 @@
         value: dailyExercise,
         userId: session && session.user ? session.user.id : null,
       };
+      persistPendingExerciseSave();
       exerciseSaveTimer = setTimeout(flushPendingExerciseSave, EXERCISE_SAVE_DEBOUNCE_MS);
       $('#bdTarget').textContent = round1(targetIntake());
       // 重算 summary + 进度条但不刷新输入框（用户正在打字）
@@ -2006,6 +2056,7 @@
         // 一并丢掉待写快照，否则它之后会把刚删的值又写回去。
         if (exerciseSaveTimer) { clearTimeout(exerciseSaveTimer); exerciseSaveTimer = null; }
         pendingExerciseSave = null;
+        persistPendingExerciseSave();
         dailyExercise = profile ? profile.exercise : 0;
         clearDailyExerciseInDb(currentDate);
         renderToday();
