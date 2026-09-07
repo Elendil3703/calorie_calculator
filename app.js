@@ -1548,7 +1548,7 @@
     const btn = $('#addFridgeEntryBtn');
     const item = getSelectedFridgeItem();
     if (!item) { alert('请先选择冰箱里的食物'); return; }
-    const amount = parseFloat($('#q_fridge_amount').value);
+    const amount = getFridgeAmount();
     if (!isFinite(amount) || amount <= 0) { alert('请输入有效摄入量'); return; }
     let kcal, detail;
     if (item.basis === 'per_serving') {
@@ -1592,6 +1592,12 @@
       renderToday();
       showLastEntryToast(entry, volNote);
     }
+  }
+  // 摄入量留空时默认按 1 计（1 份 / 1g / 1ml）；手动输入的值优先。
+  function getFridgeAmount() {
+    const raw = $('#q_fridge_amount').value.trim();
+    if (raw === '') return 1;
+    return parseFloat(raw);
   }
   function getSelectedFridgeItem() {
     const id = $('#q_fridge_item').value;
@@ -1930,7 +1936,7 @@
   }
   function updateFridgePreview() {
     const item = getSelectedFridgeItem();
-    const amount = parseFloat($('#q_fridge_amount').value);
+    const amount = getFridgeAmount();
     if (item && isFinite(amount) && amount > 0) {
       const k = Number(item.kcal);
       const kcal = item.basis === 'per_serving' ? amount * k : (amount / 100) * k;
