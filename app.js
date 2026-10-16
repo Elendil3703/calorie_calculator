@@ -87,6 +87,18 @@
   // 启动兜底定时器：12s 内 init 没走到稳定态就 hardReset。提到模块作用域，
   // 让 hardReset 能从任意路径里清掉它，不只是 DOMContentLoaded 内部。
   let initWatchdog = null;
+  // afterAuth 已成功跑完的用户 id。SDK 在标签页重新聚焦 / 跨标签同步时会对
+  // 同一个用户再补发一次 SIGNED_IN，这时不该再整套 afterAuth 跑一遍（两份
+  // loadAll 并发、两次 renderAll，失败路径还会清 token + reload）。
+  // 登出 / forceReauth 时清掉，这样换账号或重新登录仍会完整加载。
+  let appReadyUserId = null;
+  // 正在跑的 afterAuth：{ uid, run }（null = 没在跑），防同一用户并发两份。
+  let afterAuthInFlight = null;
+  let afterAuthRunSeq = 0;
+  // 会话代次：每次登出 / forceReauth 加一。afterAuth 开跑时记下来，跑完发现
+  // 变了就说明中途登出过——哪怕又用同一个账号登回来了，这一轮的结果也作废
+  // （SIGNED_OUT 已把 profile/userName 清掉，只有新的 afterAuth 会重建它们）。
+  let sessionEpoch = 0;
 
   function targetIntake() {
     if (!profile) return 0;
@@ -387,6 +399,9 @@
       for (const k of keys) localStorage.removeItem(k);
     } catch (_) {}
     session = null;
+    sessionEpoch++;
+    appReadyUserId = null;
+    afterAuthInFlight = null; // 之后同一账号再登录要重新走完整 afterAuth
     userName = null;
     userKey = null;
     profile = null;
@@ -2104,17 +2119,33 @@
 
   async function afterAuth() {
     const email = session.user.email;
+    const uid = session.user.id;
+    const epoch = sessionEpoch;
+    const run = ++afterAuthRunSeq;
     userKey = EMAIL_TO_KEY[email] || null;
     const u = EMAIL_TO_USER[email];
     userName = u ? u.name : email.split('@')[0];
     profile = userKey ? USER_PROFILES[userKey] : null;
+    afterAuthInFlight = { uid, run };
+    // 这一轮的结果还算数吗？中途登出过（代次变了，哪怕同一账号又登回来）、
+    // 换了账号、或会话没了，都不算。
+    const stale = () => !session || session.user.id !== uid || sessionEpoch !== epoch;
     try {
       await loadAll();
+      // loadAll 跑的这几秒里会话可能已经没了：用户点了登出、另一个标签页登出、
+      // SDK 发现 refresh token 失效发了 SIGNED_OUT、或者已经换成另一个账号。
+      // 那时登录页已经由 SIGNED_OUT/forceReauth 摆出来了，这里绝不能再
+      // hideLogin 把它盖掉——否则页面看着像登录着，其实没有会话。
+      // 同一账号在这期间重新登录的话，新的 SIGNED_IN 会另起一轮 afterAuth。
+      if (stale()) return;
       hideLogin();
       renderAll();
       scheduleMidnight();
+      appReadyUserId = uid;
     } catch (e) {
       console.warn('[afterAuth] loadAll failed:', e);
+      // 会话在加载途中已经没了（同上）：登录页已在，别再 reload / 弹错。
+      if (stale()) return;
       // 超时基本等于 token 坏了 / 内部 refresh 卡死。光 forceReauth 清不掉 supabase 客户端
       // 内部那些卡住的 promise，下一次 signInWithPassword 也会被拖垮——
       // 用户只能手动刷新。这里 hardReset 先 reload 一次替他做。
@@ -2127,6 +2158,8 @@
       // 永远停在「正在恢复会话」转圈圈上。
       hideInitOverlay();
       alert('加载数据失败：' + (e.message || e));
+    } finally {
+      if (afterAuthInFlight && afterAuthInFlight.run === run) afterAuthInFlight = null;
     }
   }
 
@@ -2187,7 +2220,11 @@
     sb.auth.onAuthStateChange(async (event, sess) => {
       if (event === 'SIGNED_IN' && sess) {
         if (!initSettled) return;
+        const uid = sess.user ? sess.user.id : null;
         session = sess;
+        // 同一个用户已经加载好（或正在加载）：这是标签页重新聚焦 / 跨标签同步
+        // 补发的 SIGNED_IN，不重跑 afterAuth；数据刷新交给 visibilitychange 那条路。
+        if (uid && (uid === appReadyUserId || (afterAuthInFlight && afterAuthInFlight.uid === uid))) return;
         await afterAuth();
         clearInitWatchdog();
       } else if ((event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && sess) {
@@ -2196,6 +2233,9 @@
         session = sess;
       } else if (event === 'SIGNED_OUT') {
         session = null;
+        sessionEpoch++;
+        appReadyUserId = null;
+        afterAuthInFlight = null; // 之后同一账号再登录要重新走完整 afterAuth
         userName = null;
         userKey = null;
         profile = null;
