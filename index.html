@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="style.css?v=20260806a" />
   <style>
     /* 会话恢复中遮罩。HTML 默认就显示，确保 first-paint 那一刻就盖住所有界面，
-       app.js 还没跑起来时也阻止用户点登录按钮跟后台 init 抢 auth lock。
+       app.js 还没跑起来时也阻止用户点登录按钮跟后台 init 的会话恢复并发。
        直接内联在 head 是为了不用碰 style.css 的缓存——也保证就算 style.css
        因为缓存策略加载得慢，spinner 和 z-index 也已经生效。
        颜色硬编码也是同样的考虑：不依赖 CSS 变量是否已经解析。 */
@@ -379,12 +379,13 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <!-- SDK 固定到具体版本：@2 会在没有任何 commit 的情况下悄悄升级，行为跟着变（authLock 就是这么过时的）。升级时同步看 release notes。 -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.min.js"></script>
   <!-- app.js 后面的 ?v= 是用来绕过 GitHub Pages + 浏览器磁盘缓存的。
        GH Pages 不发严格的 Cache-Control，浏览器会用启发式缓存策略，
        第二次打开常常直接读磁盘里的老 app.js，让线上 fix 看起来"没生效"。
        每次 app.js 有实质性改动就把版本号往上推一档。 -->
-  <script src="app.js?v=20260806b"></script>
+  <script src="app.js?v=20261016a"></script>
   <script src="pig.js?v=20260707f"></script>
 </body>
 </html>

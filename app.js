@@ -262,8 +262,8 @@
   // ---------- Utils ----------
   // 给可能 hang 住的 await 加超时兜底。
   // 历史问题：关闭窗口时 supabase 的 refresh-token rotation 可能写一半，
-  // 重开后 getSession() 内部 refresh 会永远 await（fetch 卡在网络层、
-  // 或 navigator.locks 被节流的旧 tab 持有），UI 永远停在 login overlay。
+  // 重开后 getSession() 内部 refresh 会永远 await（fetch 卡在网络层），
+  // UI 永远停在 login overlay。
   // 套个 timeout，超时按"会话坏了"处理即可。
   function withTimeout(promise, ms, label) {
     let timer;
@@ -319,26 +319,12 @@
   function $$(sel) { return document.querySelectorAll(sel); }
 
   // ---------- Auth ----------
-  // Supabase 默认的 lock 实现会用 navigator.locks 阻塞式等另一个标签释放锁。
-  // 如果有标签崩了 / 被浏览器后台节流 / OneDrive 同步把页面卡住，那把锁永远不释放。
-  //
-  // 这里只用 ifAvailable 试一次，拿不到立刻 last-write-wins 放行。
-  // 历史版本是"3 秒轮询 + 强制放行"——但锁被另一个 tab 的卡死 refresh 占住时，
-  // 等多久都不会回来，每个查询白付 3 秒等锁预算，外层 6-8 秒 timeout 一打满
-  // UI 就看起来"会话不稳、经常断连"。这是单用户应用，并发改 session token 的
-  // 概率约等于 0，单次尝试 + 直接放行的成本远小于等锁的成本。
-  async function authLock(name, acquireTimeout, fn) {
-    if (typeof navigator === 'undefined' || !navigator.locks || !navigator.locks.request) {
-      return await fn();
-    }
-    const r = await navigator.locks.request(
-      name,
-      { mode: 'exclusive', ifAvailable: true },
-      async (lock) => lock ? { ok: true, value: await fn() } : { ok: false }
-    );
-    if (r.ok) return r.value;
-    return await fn();
-  }
+  // 注意：不要给 createClient 传自定义 `lock`。supabase-js 2.107 起（本页固定用 2.118.0）默认就是
+  // 无锁协调（refresh 单飞 + 提交守卫，不碰 navigator.locks）；一旦传了 lock，
+  // 客户端会退回已废弃的 _acquireLock 排队路径：标签页重新聚焦时它持锁发
+  // SIGNED_IN 并 await 所有回调，而我们的回调里 afterAuth→loadAll 的每个查询
+  // 又要 getSession→排队等这把锁——互相等到 6 秒超时。实测切回前台后整整
+  // 6 秒发不出任何请求（test_rig/refocus.js 可复现）。
   // 识别 Supabase 抛出的「会话失效」类错误。出现这些时必须强制重新登录，
   // 否则 localStorage 里的坏 token 会一直发给后端，所有请求都 401，
   // 用户只能开无痕窗口（参见之前那个「后端连不上」的 bug）。
@@ -356,8 +342,8 @@
   }
   // 重连/会话恢复失败时的终极兜底：清 sb-* + reload 一次。
   // 为什么不能光 forceReauth？supabase 客户端实例内部可能挂着卡死的
-  // refresh promise / navigator.locks 引用，光清 localStorage 不掉，
-  // 下一次 signInWithPassword 也会被同一把卡死的锁拖垮——用户只能手动
+  // refresh promise（单飞的 refreshingDeferred），光清 localStorage 不掉，
+  // 下一次 signInWithPassword 也会被它拖垮——用户只能手动
   // 刷新整个页面才好。这里替用户做了那次刷新。
   // sessionStorage 标志防循环：reload 后还触发就只 cleanup 不 reload，
   // 调用方落回 forceReauth/showLogin。成功 init 时 clearInitWatchdog
@@ -383,7 +369,7 @@
   }
   async function forceReauth(msg) {
     console.warn('[forceReauth]', msg);
-    // signOut 自己也走 auth lock，坏 token / 锁竞争下同样会 hang，
+    // signOut 自己也要打网络（还可能先触发一次 refresh），坏 token / 断网下同样会 hang，
     // 没超时的话 forceReauth 永远不返回，UI 永远卡在 loading——
     // 这就是上一版 timeout 兜底为什么没生效。这里 2 秒强制放行。
     try {
@@ -455,7 +441,7 @@
     btn.disabled = true;
     btn.textContent = '登录中…';
     try {
-      // 套超时，否则锁/网络卡死时按钮永远停在"登录中…"。
+      // 套超时，否则网络卡死时按钮永远停在"登录中…"。
       const { error } = await withTimeout(
         sb.auth.signInWithPassword({ email: user.email, password }),
         10000,
@@ -465,7 +451,7 @@
       localStorage.setItem(LAST_LOGIN_KEY, key);
     } catch (e) {
       if (e.__timeout) {
-        // 登录请求卡住，多半 auth 锁/storage 坏了，硬清理 sb-* 后让用户再点一次。
+        // 登录请求卡住，多半网络/storage 坏了，硬清理 sb-* 后让用户再点一次。
         console.warn('[handleLogin] timeout — purging sb-* and prompting retry');
         try {
           const keys = [];
@@ -2103,7 +2089,7 @@
         renderAll();
       } catch (e) {
         // 切回前台 loadAll 超时多半是 token 在后台被 rotate 出问题，
-        // 或锁被节流挂住——hardReset reload 替用户做手动刷新那一步，
+        // 或网络还没恢复——hardReset reload 替用户做手动刷新那一步，
         // 重建 supabase 客户端丢掉所有卡死的内部状态。reload 用过一次
         // 就只能落回 in-page forceReauth。
         if (isAuthError(e) || e.__timeout) {
@@ -2129,8 +2115,8 @@
       scheduleMidnight();
     } catch (e) {
       console.warn('[afterAuth] loadAll failed:', e);
-      // 超时基本等于 token 坏了 / 锁卡死。光 forceReauth 清不掉 supabase 客户端
-      // 内部那些卡住的 promise/lock，下一次 signInWithPassword 也会被拖垮——
+      // 超时基本等于 token 坏了 / 内部 refresh 卡死。光 forceReauth 清不掉 supabase 客户端
+      // 内部那些卡住的 promise，下一次 signInWithPassword 也会被拖垮——
       // 用户只能手动刷新。这里 hardReset 先 reload 一次替他做。
       if (isAuthError(e) || e.__timeout) {
         if (hardReset('afterAuth/loadAll')) return;
@@ -2160,17 +2146,13 @@
       auth: {
         persistSession: true,
         autoRefreshToken: true,
-        // 默认 lock 跨标签共享 navigator.locks，另一个标签崩/被节流时会
-        // 把锁挂死，新登录就会停在 200 之后写不进 storage，UI 不跳转。
-        // 这里改成 ifAvailable 单次尝试 + 立刻 last-write-wins 兜底，
-        // 避免每个查询都白等 3 秒锁。详见 authLock 函数顶部注释。
-        lock: authLock,
+        // 不传 lock：用 SDK 默认的无锁协调。原因见「---------- Auth ----------」处注释。
       }
     });
     setupEvents();
 
     // 登录覆盖层 HTML 默认就是可见的——init 期间用户看到登录页会忍不住点
-    // 登录，跟后台 session 恢复 / refresh 抢同一把 auth lock，把 supabase
+    // 登录，跟后台 session 恢复 / refresh 并发（旧版 SDK 还会抢同一把 auth lock），把 supabase
     // 客户端内部状态搞死，最终连环出现「登录中→会话异常→登录超时」三连。
     // init 期间先禁用按钮，等 getSession 决定下一步（恢复成功隐藏遮罩 /
     // 失败 hardReset 走 reload / 无 session 走 showLogin 放回可点）。
@@ -2228,7 +2210,7 @@
     });
 
     // getSession 可能因 localStorage 里残留的坏 token 而抛错，
-    // 也可能因为内部 refresh 卡死（fetch hang / navigator.locks 节流）而
+    // 也可能因为内部 refresh 卡死（fetch hang）而
     // 永远不返回——后者就是"关闭窗口重开后一直加载中"的根因。
     // 抛错 → 清 sb-* 重登；超时 → 同样按"会话坏了"处理。
     let existing = null;
