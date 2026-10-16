@@ -57,7 +57,7 @@
   </div>
 
   <header class="app-header">
-    <div class="brand">🍎 卡路里计算器</div>
+    <div class="brand">🍎 卡路里计算器<span id="syncBadge" class="sync-badge hidden" aria-live="polite"></span></div>
     <div class="header-right">
       <button id="logoutBtn" class="ghost-btn" title="登出">
         <span id="currentUserBadge">--</span>
@@ -385,7 +385,7 @@
        GH Pages 不发严格的 Cache-Control，浏览器会用启发式缓存策略，
        第二次打开常常直接读磁盘里的老 app.js，让线上 fix 看起来"没生效"。
        每次 app.js 有实质性改动就把版本号往上推一档。 -->
-  <script src="app.js?v=20261016b"></script>
+  <script src="app.js?v=20261016c"></script>
   <script src="pig.js?v=20260707f"></script>
 </body>
 </html>

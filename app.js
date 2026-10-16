@@ -412,6 +412,54 @@
     if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
     showLogin(msg || '会话已过期，请重新登录');
   }
+  // ---------- 后台同步小标 ----------
+  // 切回前台 / 跨午夜的 loadAll 在后台跑，以前界面上没有任何提示，慢网下看着
+  // 像死了、点了又没反应。这里只做一个不挡操作的小标（页头标题旁）：开始显示
+  // 「同步中…」，结束隐藏，非会话类失败时短暂显示「同步失败」。
+  // 用计数而不是布尔：两次刷新重叠时不会被先结束的那次提前藏掉。
+  // 再加一个代次：登出 / 会话失效（syncReset）时 +1，登出之前发起、之后才
+  // 结束的"孤儿"刷新拿着旧代次来 syncEnd 会被直接忽略——否则它会在登录页
+  // 或刚登回来的页面上冒出「同步失败」，或把新会话正在进行的刷新计数减掉。
+  let syncDepth = 0;
+  let syncFailTimer = null;
+  let syncGen = 0;
+  function setSyncBadge(text, cls) {
+    const el = document.getElementById('syncBadge');
+    if (!el) return;
+    el.classList.remove('syncing', 'error');
+    if (!text) { el.classList.add('hidden'); el.textContent = ''; return; }
+    el.textContent = text;
+    if (cls) el.classList.add(cls);
+    el.classList.remove('hidden');
+  }
+  // 返回当前代次，调用方原样传回 syncEnd。
+  function syncBegin() {
+    if (syncFailTimer) { clearTimeout(syncFailTimer); syncFailTimer = null; }
+    syncDepth++;
+    setSyncBadge('同步中…', 'syncing');
+    return syncGen;
+  }
+  function syncEnd(gen, failed) {
+    if (gen !== syncGen) return; // 登出前发起的孤儿刷新，小标已被 syncReset 清掉，别再碰
+    if (syncDepth > 0) syncDepth--;
+    if (syncDepth > 0) return;
+    if (failed) {
+      setSyncBadge('同步失败', 'error');
+      syncFailTimer = setTimeout(() => {
+        syncFailTimer = null;
+        if (syncDepth === 0) setSyncBadge(null);
+      }, 4000);
+    } else {
+      setSyncBadge(null);
+    }
+  }
+  // 登出 / 会话失效后小标没意义了：showLogin 里调用，连计数一起清零。
+  function syncReset() {
+    syncGen++;
+    syncDepth = 0;
+    if (syncFailTimer) { clearTimeout(syncFailTimer); syncFailTimer = null; }
+    setSyncBadge(null);
+  }
   // init 期间盖在最上层的"请稍后"遮罩。HTML 默认显示，凡是走到稳定态
   // (showLogin / hideLogin / 早期错误 return) 都要把它藏掉，否则用户
   // 一直看到「正在恢复会话」转圈圈。
@@ -421,6 +469,7 @@
   }
   function showLogin(msg) {
     hideInitOverlay();
+    syncReset();
     $('#loginOverlay').classList.remove('hidden');
     $('#loginError').textContent = msg || '';
     const last = localStorage.getItem(LAST_LOGIN_KEY);
@@ -801,8 +850,13 @@
     const now = new Date();
     const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
     midnightTimer = setTimeout(async () => {
-      try { await loadAll(); renderAll(); } catch (e) { console.warn(e); }
-      scheduleMidnight();
+      midnightTimer = null;
+      // 已登出就什么都不做、也不再挂下一次——下次登录的 afterAuth 会重新安排。
+      // 否则刷新途中登出时，这个孤儿回调会把定时器续到下个午夜，在登录页上闪「同步失败」。
+      if (!session) return;
+      const gen = syncBegin();
+      try { await loadAll(); renderAll(); syncEnd(gen, false); } catch (e) { console.warn(e); syncEnd(gen, true); }
+      if (session) scheduleMidnight();
     }, next - now);
   }
 
@@ -2099,9 +2153,11 @@
     });
     document.addEventListener('visibilitychange', async () => {
       if (document.hidden || !session) return;
+      const gen = syncBegin();
       try {
         await loadAll();
         renderAll();
+        syncEnd(gen, false);
       } catch (e) {
         // 切回前台 loadAll 超时多半是 token 在后台被 rotate 出问题，
         // 或网络还没恢复——hardReset reload 替用户做手动刷新那一步，
@@ -2109,10 +2165,11 @@
         // 就只能落回 in-page forceReauth。
         if (isAuthError(e) || e.__timeout) {
           if (hardReset('visibilitychange/loadAll')) return;
-          await forceReauth('会话异常已重置，请重新登录');
+          await forceReauth('会话异常已重置，请重新登录'); // showLogin 会把小标一起清掉
           return;
         }
         console.warn('[visibilitychange] loadAll failed:', e);
+        syncEnd(gen, true);
       }
     });
   }
