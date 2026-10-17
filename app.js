@@ -540,130 +540,140 @@
   }
 
   // ---------- Data ----------
+  // 加载首屏/刷新需要的全部数据。查询分两波并行发出（之前 8 个串行往返，
+  // 慢网下光这一段就要 1–2 秒）：
+  //   第一波：今日运动量 ∥ settings ∥ 今日 entries
+  //   第二波：（要先拿到 settings 的体重锚点日期才知道历史窗口）
+  //           历史 entries ∥ 历史运动量 ∥ 历史 deficit ∥ 放纵日 ∥ 冰箱
+  // 错误语义与串行版完全一致：settings / 今日 entries / 历史 entries 失败整体抛出，
+  // 其余几张表失败吞掉走默认值。
+  // 结果先放局部变量，最后确认会话还是开跑时那一个（没登出、没换账号）才一次性
+  // 写进全局并 upsert deficit 快照——否则中途登出/换账号时，过期的这一轮会把
+  // 旧账号的数据和 deficit 写到新账号名下。
   async function loadAll() {
     // 先把还在防抖窗口里的运动量写库，否则下面 fetch 会读回旧值/默认值，
     // 把用户刚改还没落库的数字冲掉（切回前台 / 跨午夜刷新时最容易触发）。
     restorePendingExerciseSave();
     await flushPendingExerciseSave();
     currentDate = todayStr();
+    const today = currentDate;
     const userId = session.user.id;
-    const exFromDb = await fetchDailyExerciseFromDb(currentDate);
-    // 优先级：今天的待写值（上面 flush 失败时还留着，是用户最新的修改）
-    //   > 库里读到的结果（null = 没行，回默认）
-    //   > 查询失败：内存值是今天的就保留，否则（刚刷新/跨午夜）只能回默认。
-    const pendingToday = (pendingExerciseSave &&
-        pendingExerciseSave.date === currentDate &&
-        (!pendingExerciseSave.userId || pendingExerciseSave.userId === userId))
-      ? pendingExerciseSave.value : null;
-    if (pendingToday != null) {
-      dailyExercise = pendingToday;
-    } else if (exFromDb !== undefined) {
-      dailyExercise = exFromDb != null ? exFromDb : (profile ? profile.exercise : 0);
-    } else if (exerciseLoadedDate !== currentDate) {
-      dailyExercise = profile ? profile.exercise : 0;
-    }
-    exerciseLoadedDate = currentDate;
+    const epoch = sessionEpoch;
+    const q = (builder, label) => withTimeout(builder, 8000, label);
+    // 硬依赖：出错就抛，整个 loadAll 失败。
+    const required = (promise) => promise.then((r) => { if (r.error) throw r.error; return r.data; });
+    // 可选表（可能还没建好 / 偶发失败）：出错吞掉，返回 null 让调用处走默认值。
+    const optional = (promise, label) => required(promise).catch((e) => {
+      console.warn(`[loadAll] ${label} failed:`, e);
+      return null;
+    });
 
-    const { data: settings, error: e1 } = await withTimeout(
-      sb.from('settings').select('threshold, weight_current, weight_target, weight_set_date').eq('user_id', userId).maybeSingle(),
-      8000,
-      'loadAll/settings'
-    );
-    if (e1) throw e1;
+    // ---- 第一波 ----
+    const [exFromDb, settings, entries] = await Promise.all([
+      fetchDailyExerciseFromDb(today), // 自带 try/catch：null=没行，undefined=查询失败
+      required(q(
+        sb.from('settings').select('threshold, weight_current, weight_target, weight_set_date').eq('user_id', userId).maybeSingle(),
+        'loadAll/settings'
+      )),
+      required(q(
+        sb.from('entries').select('*').eq('date', today).order('created_at', { ascending: false }),
+        'loadAll/entries'
+      )),
+    ]);
     const stored = settings != null ? Number(settings.threshold) : null;
-    deficit = (stored != null && isFinite(stored) && stored >= 0 && stored <= MAX_PLAUSIBLE_DEFICIT)
+    const nextDeficit = (stored != null && isFinite(stored) && stored >= 0 && stored <= MAX_PLAUSIBLE_DEFICIT)
       ? stored
       : DEFAULT_DEFICIT;
-    weightCurrent = settings ? plausibleWeight(settings.weight_current) : null;
-    weightTarget = settings ? plausibleWeight(settings.weight_target) : null;
-    weightSetDate = (settings && /^\d{4}-\d{2}-\d{2}$/.test(String(settings.weight_set_date || '')))
+    const nextWeightCurrent = settings ? plausibleWeight(settings.weight_current) : null;
+    const nextWeightTarget = settings ? plausibleWeight(settings.weight_target) : null;
+    const nextWeightSetDate = (settings && /^\d{4}-\d{2}-\d{2}$/.test(String(settings.weight_set_date || '')))
       ? String(settings.weight_set_date)
       : null;
 
-    const { data: entries, error: e2 } = await withTimeout(
-      sb.from('entries').select('*').eq('date', currentDate).order('created_at', { ascending: false }),
-      8000,
-      'loadAll/entries'
-    );
-    if (e2) throw e2;
-    todayEntries = entries || [];
+    // 今日运动量在第一波结束就写进全局，不等第二波：用户可能在第二波的几秒里
+    // 改了运动量并已保存成功（pending 已清），拖到最后再赋值会用第一波读到的
+    // 旧值把它盖回去。这里只动 dailyExercise 一个值，同样先确认会话没变。
+    // 优先级：今天的待写值（上面 flush 失败时还留着，是用户最新的修改）
+    //   > 库里读到的结果（null = 没行，回默认）
+    //   > 查询失败：内存值是今天的就保留，否则（刚刷新/跨午夜）只能回默认。
+    if (sessionEpoch === epoch && session && session.user.id === userId) {
+      const pendingToday = (pendingExerciseSave &&
+          pendingExerciseSave.date === today &&
+          (!pendingExerciseSave.userId || pendingExerciseSave.userId === userId))
+        ? pendingExerciseSave.value : null;
+      if (pendingToday != null) {
+        dailyExercise = pendingToday;
+      } else if (exFromDb !== undefined) {
+        dailyExercise = exFromDb != null ? exFromDb : (profile ? profile.exercise : 0);
+      } else if (exerciseLoadedDate !== today) {
+        dailyExercise = profile ? profile.exercise : 0;
+      }
+      exerciseLoadedDate = today;
+    }
 
     // 历史窗口默认 30 天；体重锚点更早的话往前扩到锚点日，
     // 否则累计缺口会漏掉窗口外的天数（YYYY-MM-DD 字符串可直接比大小）。
     let startStr = daysAgoStr(30);
-    if (weightSetDate && weightSetDate < startStr) startStr = weightSetDate;
-    const { data: hist, error: e3 } = await withTimeout(
-      sb.from('entries').select('date, calories').gte('date', startStr).lt('date', currentDate),
-      8000,
-      'loadAll/history'
-    );
-    if (e3) throw e3;
+    if (nextWeightSetDate && nextWeightSetDate < startStr) startStr = nextWeightSetDate;
+
+    // ---- 第二波 ----
+    const [hist, hex, hdf, hcd, fridge] = await Promise.all([
+      required(q(
+        sb.from('entries').select('date, calories').gte('date', startStr).lt('date', today),
+        'loadAll/history'
+      )),
+      // 历史 daily_exercise / daily_deficit 快照、放纵日：表可能还没建好（新 schema），
+      // 错误吞掉走默认值，整体 loadAll 不挂。
+      optional(q(
+        sb.from('daily_exercise').select('date, kcal').gte('date', startStr).lt('date', today),
+        'loadAll/historyExercise'
+      ), 'historyExercise'),
+      optional(q(
+        sb.from('daily_deficit').select('date, kcal').gte('date', startStr).lte('date', today),
+        'loadAll/historyDeficit'
+      ), 'historyDeficit'),
+      // 放纵日集合：含今天（统计页不画今天，但今日页的按钮要回显状态）。
+      optional(q(
+        sb.from('cheat_days').select('date').gte('date', startStr).lte('date', today),
+        'loadAll/cheatDays'
+      ), 'cheatDays'),
+      // fridge_items 表如果还没在 Supabase 里建好，PostgREST 会回 PGRST205/42P01。
+      // 那时整个 loadAll 不应该挂掉——其余功能（今日/统计）都能继续用。
+      optional(q(
+        sb.from('fridge_items').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+        'loadAll/fridge'
+      ), 'fridge'),
+    ]);
+
+    // ---- 会话还是开跑时那一个？不是就整轮作废，什么都不写 ----
+    if (sessionEpoch !== epoch || !session || session.user.id !== userId) {
+      console.warn('[loadAll] session changed during load; discarding results');
+      return;
+    }
+
+    // ---- 一次性写进全局 ----
+    deficit = nextDeficit;
+    weightCurrent = nextWeightCurrent;
+    weightTarget = nextWeightTarget;
+    weightSetDate = nextWeightSetDate;
+    todayEntries = entries || [];
+
     historyData = {};
     for (const row of (hist || [])) {
       historyData[row.date] = (historyData[row.date] || 0) + Number(row.calories);
     }
-
-    // 拉历史 daily_exercise / daily_deficit 快照。表可能还没建好（新 schema），
-    // 错误吞掉走默认值，整体 loadAll 不挂。
     historyExercise = {};
+    for (const row of (hex || [])) historyExercise[row.date] = Number(row.kcal);
     historyDeficit = {};
-    try {
-      const { data: hex, error: e4 } = await withTimeout(
-        sb.from('daily_exercise').select('date, kcal').gte('date', startStr).lt('date', currentDate),
-        8000,
-        'loadAll/historyExercise'
-      );
-      if (e4) throw e4;
-      for (const row of (hex || [])) historyExercise[row.date] = Number(row.kcal);
-    } catch (e) {
-      console.warn('[loadAll] historyExercise failed:', e);
-    }
-    try {
-      const { data: hdf, error: e5 } = await withTimeout(
-        sb.from('daily_deficit').select('date, kcal').gte('date', startStr).lte('date', currentDate),
-        8000,
-        'loadAll/historyDeficit'
-      );
-      if (e5) throw e5;
-      for (const row of (hdf || [])) historyDeficit[row.date] = Number(row.kcal);
-    } catch (e) {
-      console.warn('[loadAll] historyDeficit failed:', e);
-    }
-
-    // 放纵日集合：含今天（统计页不画今天，但今日页的按钮要回显状态）。
-    // 表可能还没建好，错误吞掉当作"没有放纵日"。
+    for (const row of (hdf || [])) historyDeficit[row.date] = Number(row.kcal);
     cheatDays = new Set();
-    try {
-      const { data: hcd, error: e6 } = await withTimeout(
-        sb.from('cheat_days').select('date').gte('date', startStr).lte('date', currentDate),
-        8000,
-        'loadAll/cheatDays'
-      );
-      if (e6) throw e6;
-      for (const row of (hcd || [])) cheatDays.add(row.date);
-    } catch (e) {
-      console.warn('[loadAll] cheatDays failed:', e);
-    }
+    for (const row of (hcd || [])) cheatDays.add(row.date);
+    fridgeItems = fridge || [];
 
     // 给今天 upsert 一个 deficit 快照，覆盖最新设定。改 deficit 也会走 saveDeficit 再写一次。
-    if (historyDeficit[currentDate] !== deficit) {
-      historyDeficit[currentDate] = deficit;
-      saveDailyDeficitToDb(currentDate, deficit);
-    }
-
-    // fridge_items 表如果还没在 Supabase 里建好，PostgREST 会回 PGRST205/42P01。
-    // 那时整个 loadAll 不应该挂掉——其余功能（今日/统计）都能继续用。
-    try {
-      const { data: fridge, error: e4 } = await withTimeout(
-        sb.from('fridge_items').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-        8000,
-        'loadAll/fridge'
-      );
-      if (e4) throw e4;
-      fridgeItems = fridge || [];
-    } catch (e) {
-      console.warn('[loadAll/fridge] failed (treating as empty):', e);
-      fridgeItems = [];
+    if (historyDeficit[today] !== deficit) {
+      historyDeficit[today] = deficit;
+      saveDailyDeficitToDb(today, deficit);
     }
   }
 
