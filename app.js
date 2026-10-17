@@ -412,6 +412,87 @@
     if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
     showLogin(msg || '会话已过期，请重新登录');
   }
+  // ---------- 首屏快照（stale-while-revalidate） ----------
+  // 每次数据加载/变更后把界面状态存一份到 localStorage；冷启动时如果本地还有
+  // 该用户的 token、且快照是今天的，就先用快照把界面画出来、藏掉遮罩，再在
+  // 后台走正常的 getSession → loadAll 刷新。这样打开 app 不用盯着「正在恢复会话」
+  // 转圈等 refresh + 查询那一两秒；真正的会话确认失败时照常回到登录页。
+  // key 不带 sb- 前缀，hardReset/forceReauth 清会话时不会误删（showLogin 会清）。
+  const SNAPSHOT_KEY = 'cc-snapshot';
+  const SNAPSHOT_VERSION = 1;
+  function authStorageKey() {
+    try { return 'sb-' + new URL(SUPABASE_URL).hostname.split('.')[0] + '-auth-token'; } catch (_) { return null; }
+  }
+  // 从邮箱推出用户名/档案（afterAuth 和快照恢复共用）。
+  function setUserFromEmail(email) {
+    userKey = EMAIL_TO_KEY[email] || null;
+    const u = EMAIL_TO_USER[email];
+    userName = u ? u.name : String(email || '').split('@')[0];
+    profile = userKey ? USER_PROFILES[userKey] : null;
+  }
+  function persistSnapshot() {
+    // 只在会话确认过、且这个用户的 loadAll 已经成功跑完后才存——否则换账号后
+    // 新用户刚登录、旧用户的数据还在内存里时（切后台触发的保存）会把 A 的记录
+    // 存到 B 名下；快照模式下（session 还没回来）也不会覆盖。
+    if (!session || !session.user || !currentDate || !profile) return;
+    if (appReadyUserId !== session.user.id) return;
+    try {
+      localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({
+        v: SNAPSHOT_VERSION,
+        userId: session.user.id,
+        email: session.user.email,
+        date: currentDate,
+        savedAt: Date.now(),
+        dailyExercise, deficit, weightCurrent, weightTarget, weightSetDate,
+        todayEntries, historyData, historyExercise, historyDeficit,
+        cheatDays: Array.from(cheatDays),
+        fridgeItems,
+      }));
+    } catch (_) {}
+  }
+  // 返回可用的快照，否则 null。要求：格式对、是今天的、本地还有同一用户的 token。
+  function readSnapshot() {
+    try {
+      const raw = localStorage.getItem(SNAPSHOT_KEY);
+      if (!raw) return null;
+      const snap = JSON.parse(raw);
+      if (!snap || snap.v !== SNAPSHOT_VERSION || snap.date !== todayStr() || !snap.userId || !snap.email) return null;
+      const key = authStorageKey();
+      const tokRaw = key ? localStorage.getItem(key) : null;
+      if (!tokRaw) return null;
+      const tok = JSON.parse(tokRaw);
+      if (!tok || !tok.user || tok.user.id !== snap.userId) return null;
+      if (!EMAIL_TO_KEY[snap.email]) return null;
+      return snap;
+    } catch (_) { return null; }
+  }
+  function applySnapshot(snap) {
+    setUserFromEmail(snap.email);
+    currentDate = snap.date;
+    dailyExercise = Number(snap.dailyExercise) || 0;
+    exerciseLoadedDate = snap.date;
+    const snapDeficit = Number(snap.deficit);
+    deficit = (isFinite(snapDeficit) && snapDeficit >= 0 && snapDeficit <= MAX_PLAUSIBLE_DEFICIT) ? snapDeficit : DEFAULT_DEFICIT;
+    weightCurrent = plausibleWeight(snap.weightCurrent);
+    weightTarget = plausibleWeight(snap.weightTarget);
+    weightSetDate = snap.weightSetDate || null;
+    todayEntries = Array.isArray(snap.todayEntries) ? snap.todayEntries : [];
+    historyData = snap.historyData || {};
+    historyExercise = snap.historyExercise || {};
+    historyDeficit = snap.historyDeficit || {};
+    cheatDays = new Set(Array.isArray(snap.cheatDays) ? snap.cheatDays : []);
+    fridgeItems = Array.isArray(snap.fridgeItems) ? snap.fridgeItems : [];
+  }
+  function clearSnapshot() { try { localStorage.removeItem(SNAPSHOT_KEY); } catch (_) {} }
+  // 快照先画出来、会话还没确认的那不到一秒里（或会话已失效时），写操作要先等一等。
+  // 闸门覆盖整个恢复过程（afterAuth 的 loadAll 还在跑时也算），否则这时写入的记录
+  // 会被随后到达的 loadAll 结果从界面上盖掉，用户以为没加上又加一遍。
+  function requireSession() {
+    if (session && !(afterAuthInFlight && afterAuthInFlight.uid === session.user.id)) return true;
+    alert('正在恢复会话，请稍候一两秒再试');
+    return false;
+  }
+
   // ---------- 后台同步小标 ----------
   // 切回前台 / 跨午夜的 loadAll 在后台跑，以前界面上没有任何提示，慢网下看着
   // 像死了、点了又没反应。这里只做一个不挡操作的小标（页头标题旁）：开始显示
@@ -470,6 +551,7 @@
   function showLogin(msg) {
     hideInitOverlay();
     syncReset();
+    clearSnapshot(); // 回到登录页 = 这台设备上的会话不再可信，别再用旧快照抢先画
     $('#loginOverlay').classList.remove('hidden');
     $('#loginError').textContent = msg || '';
     const last = localStorage.getItem(LAST_LOGIN_KEY);
@@ -678,6 +760,7 @@
   }
 
   async function addEntry(payload) {
+    if (!requireSession()) return null;
     payload.date = todayStr();
     payload.user_id = session.user.id;
     const { data, error } = await sb.from('entries').insert(payload).select().single();
@@ -692,6 +775,7 @@
   // AI 多项一次性写入。一次 insert 走一次 PostgREST，比循环 addEntry 省 N-1 次 RTT。
   // 顺手把 AI 返回的顺序也保留——倒着 unshift，让 payloads[0] 落在 todayEntries 最前。
   async function addEntries(payloads) {
+    if (!requireSession()) return null;
     if (!payloads || payloads.length === 0) return [];
     const today = todayStr();
     const userId = session.user.id;
@@ -708,6 +792,7 @@
     return data;
   }
   async function removeEntry(id) {
+    if (!requireSession()) return;
     const removed = todayEntries.find(e => e.id === id) || null;
     const { error } = await sb.from('entries').delete().eq('id', id);
     if (error) {
@@ -753,6 +838,7 @@
     return data;
   }
   async function deleteEntryById(id) {
+    if (!requireSession()) return false;
     const { error } = await sb.from('entries').delete().eq('id', id);
     if (error) {
       if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return false; }
@@ -763,6 +849,7 @@
     return true;
   }
   async function insertEntryForDate(date, payload) {
+    if (!requireSession()) return null;
     const enriched = { ...payload, date, user_id: session.user.id };
     const { data, error } = await sb.from('entries').insert(enriched).select().single();
     if (error) {
@@ -775,6 +862,7 @@
   }
 
   async function saveDeficit(value) {
+    if (!requireSession()) return false;
     const { error } = await sb.from('settings').upsert({
       user_id: session.user.id,
       threshold: value,
@@ -797,6 +885,7 @@
   // 锚点日期：当前体重变了（或从没设过锚点）就从今天重新起算累计缺口；
   // 只改目标体重不动锚点，已积累的进度保留。
   async function saveWeights(current, target) {
+    if (!requireSession()) return false;
     const setDate = (weightCurrent == null || current !== weightCurrent || !weightSetDate)
       ? todayStr()
       : weightSetDate;
@@ -821,6 +910,7 @@
 
   // ---------- Fridge ----------
   async function addFridgeItem(payload) {
+    if (!requireSession()) return null;
     payload.user_id = session.user.id;
     const { data, error } = await sb.from('fridge_items').insert(payload).select().single();
     if (error) {
@@ -845,6 +935,7 @@
     return data;
   }
   async function removeFridgeItem(id) {
+    if (!requireSession()) return false;
     const { error } = await sb.from('fridge_items').delete().eq('id', id);
     if (error) {
       if (isAuthError(error)) { await forceReauth('会话已过期，请重新登录'); return; }
@@ -895,6 +986,7 @@
     btn.textContent = on ? '🍰 今天是放纵日（点击取消）' : '🍰 标记为放纵日';
   }
   async function handleToggleCheat() {
+    if (!requireSession()) return;
     const date = currentDate || todayStr();
     const on = !cheatDays.has(date);
     if (on) cheatDays.add(date); else cheatDays.delete(date);
@@ -959,6 +1051,7 @@
     el.classList.remove('hidden');
   }
   function renderToday() {
+    persistSnapshot(); // 每次记录/运动量/设置变动后都会走到这里，顺手把快照更新掉
     renderGoalBanner();
     $('#dateLine').textContent = formatDateLong(currentDate || todayStr());
     updateCheatButton();
@@ -1063,6 +1156,7 @@
     $('#f_volume_label').classList.toggle('hidden', $('#f_basis').value !== 'per_100g');
   }
   function renderFridge() {
+    persistSnapshot();
     populateFridgePicker();
     const list = $('#fridgeList');
     list.innerHTML = '';
@@ -1521,6 +1615,7 @@
     refreshAfterDayEdit(dayDetailDate);
   }
   async function handleDayDetailExercise() {
+    if (!requireSession()) return;
     const input = $('#dayDetailExercise');
     const date = dayDetailDate;
     const def = profile ? profile.exercise : 0;
@@ -1544,6 +1639,7 @@
     if (date === currentDate) renderToday();
   }
   async function handleDayDetailCheat() {
+    if (!requireSession()) return;
     const date = dayDetailDate;
     const on = $('#dayDetailCheat').checked;
     if (on) cheatDays.add(date); else cheatDays.delete(date);
@@ -2123,6 +2219,9 @@
     });
     bdEx.addEventListener('blur', () => {
       if (bdEx.value === '' || !isFinite(parseFloat(bdEx.value))) {
+        // 会话还没确认（快照模式）时不能删库里的行，否则随后 loadAll 读回旧值、
+        // 界面悄悄回滚。先把输入框恢复成当前值，让用户稍后再清。
+        if (!session) { renderToday(); return; }
         // 用户清空 = 回到默认；删掉今天的 override 行（没行 = 用 profile.exercise）。
         // 一并丢掉待写快照，否则它之后会把刚删的值又写回去。
         if (exerciseSaveTimer) { clearTimeout(exerciseSaveTimer); exerciseSaveTimer = null; }
@@ -2162,7 +2261,8 @@
       if (ok) { renderToday(); renderSettings(); alert('已保存'); }
     });
     document.addEventListener('visibilitychange', async () => {
-      if (document.hidden || !session) return;
+      if (document.hidden) { persistSnapshot(); return; }
+      if (!session) return;
       const gen = syncBegin();
       try {
         await loadAll();
@@ -2185,14 +2285,10 @@
   }
 
   async function afterAuth() {
-    const email = session.user.email;
     const uid = session.user.id;
     const epoch = sessionEpoch;
     const run = ++afterAuthRunSeq;
-    userKey = EMAIL_TO_KEY[email] || null;
-    const u = EMAIL_TO_USER[email];
-    userName = u ? u.name : email.split('@')[0];
-    profile = userKey ? USER_PROFILES[userKey] : null;
+    setUserFromEmail(session.user.email);
     afterAuthInFlight = { uid, run };
     // 这一轮的结果还算数吗？中途登出过（代次变了，哪怕同一账号又登回来）、
     // 换了账号、或会话没了，都不算。
@@ -2205,10 +2301,10 @@
       // hideLogin 把它盖掉——否则页面看着像登录着，其实没有会话。
       // 同一账号在这期间重新登录的话，新的 SIGNED_IN 会另起一轮 afterAuth。
       if (stale()) return;
+      appReadyUserId = uid; // 先标记，renderAll 里的 persistSnapshot 才会存这次的结果
       hideLogin();
       renderAll();
       scheduleMidnight();
-      appReadyUserId = uid;
     } catch (e) {
       console.warn('[afterAuth] loadAll failed:', e);
       // 会话在加载途中已经没了（同上）：登录页已在，别再 reload / 弹错。
@@ -2259,6 +2355,18 @@
     const loginBtn = $('#loginBtn');
     loginBtn.disabled = true;
     loginBtn.textContent = '正在恢复会话…';
+
+    // ---- 首屏先用上次的快照画出来（见 SNAPSHOT_KEY 处注释）----
+    // 之后 getSession/afterAuth 照常跑：成功就用新数据重画并收掉小标；
+    // 会话真失效时 forceReauth/showLogin 会盖上登录页并清掉快照。
+    let snapGen = null;
+    const snap = readSnapshot();
+    if (snap) {
+      applySnapshot(snap);
+      renderAll();
+      hideLogin();
+      snapGen = syncBegin();
+    }
 
     // 终极兜底：12 秒内启动流程没走到"登录页可见"或"今日页可见"任一稳定态，
     // 就 hardReset（清 sb-* + reload 一次）。任何 await 卡死、forceReauth
@@ -2340,6 +2448,9 @@
     if (existing) {
       session = existing;
       await afterAuth();
+      // 快照模式下的小标：加载成功收掉；非会话类失败（alert 那条路）显示「同步失败」。
+      // 会话类失败走了 showLogin → syncReset，这里的 syncEnd 会因代次不同被忽略。
+      if (snapGen != null) syncEnd(snapGen, appReadyUserId == null);
     } else {
       showLogin();
     }
