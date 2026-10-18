@@ -4,6 +4,21 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>卡路里计算器</title>
+  <!-- 提前和 Supabase / CDN 建连，并先发一个极小的匿名查询把后端的首请求冷路径
+       （实测 ~0.7 s，之后每次 ~60 ms）在 SDK 还在下载时就走掉，不占首屏关键路径。
+       anon key 本来就是公开的（见 app.js 顶部），RLS 下这个查询只会返回空数组。 -->
+  <link rel="preconnect" href="https://exirxesaxbqhfxddgocf.supabase.co" crossorigin />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <script>
+    (function () {
+      try {
+        fetch('https://exirxesaxbqhfxddgocf.supabase.co/rest/v1/entries?select=id&limit=1', {
+          headers: { apikey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV4aXJ4ZXNheGJxaGZ4ZGRnb2NmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwMjAyMTIsImV4cCI6MjA5NDU5NjIxMn0.wCbbj_amBhkU9wFZkW2OKYhfsd6R3LZTd6XZ4NItV1E' },
+          keepalive: true,
+        }).catch(function () {});
+      } catch (_) {}
+    })();
+  </script>
   <link rel="stylesheet" href="style.css?v=20260806a" />
   <style>
     /* 会话恢复中遮罩。HTML 默认就显示，确保 first-paint 那一刻就盖住所有界面，
