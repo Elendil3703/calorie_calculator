@@ -276,7 +276,7 @@
   // 历史问题：关闭窗口时 supabase 的 refresh-token rotation 可能写一半，
   // 重开后 getSession() 内部 refresh 会永远 await（fetch 卡在网络层），
   // UI 永远停在 login overlay。
-  // 套个 timeout，超时按"会话坏了"处理即可。
+  // 套个 timeout；超时按"网络/客户端卡住"处理（保留 token，reload 一次），不等于会话坏了。
   function withTimeout(promise, ms, label) {
     let timer;
     const timeout = new Promise((_, rej) => {
@@ -342,6 +342,7 @@
   // 用户只能开无痕窗口（参见之前那个「后端连不上」的 bug）。
   function isAuthError(e) {
     if (!e) return false;
+    if (e.__timeout) return false; // 纯超时不是会话错误（别让 label 文字里的 session/token 误伤）
     const status = e.status || (e.context && e.context.status) || 0;
     if (status === 401 || status === 403) return true;
     // PostgrestError 没有 status 字段，401 的信息藏在 code/details 里：
@@ -361,17 +362,25 @@
   // 调用方落回 forceReauth/showLogin。成功 init 时 clearInitWatchdog
   // 会顺手把这个标志清掉，下次出错才能再 reload 一次。
   // 返回 true = 即将 reload；false = 这次不 reload，调用方自行兜底。
-  function hardReset(reason) {
-    console.warn('[hardReset]', reason);
+  // purgeTokens：只有确定 token 本身坏了（401 类真·会话失效 / 持久化 session 解析出错）
+  // 才清 sb-*。纯超时 ≠ 会话坏：慢网 / 刚唤醒的电台 / 服务端冷路径都会超时，
+  // 这时清掉还有效的 refresh token 只是把一次网络抖动放大成重输密码。reload 一次
+  // 让客户端重建即可，登录态保留；reload 后再失败才由调用方落到 forceReauth。
+  // （7 月那次"超时不清 token"出问题是因为当时 init 有死锁、会无限卡住；
+  //   死锁已随自定义 lock 一起移除，且 SIGNED_IN 已有 initSettled 门闸。）
+  function hardReset(reason, purgeTokens) {
+    console.warn('[hardReset]', reason, purgeTokens ? '(purging tokens)' : '(keeping tokens)');
     if (initWatchdog) { clearTimeout(initWatchdog); initWatchdog = null; }
-    try {
-      const keys = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith('sb-')) keys.push(k);
-      }
-      for (const k of keys) localStorage.removeItem(k);
-    } catch (_) {}
+    if (purgeTokens) {
+      try {
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('sb-')) keys.push(k);
+        }
+        for (const k of keys) localStorage.removeItem(k);
+      } catch (_) {}
+    }
     if (!sessionStorage.getItem('cc_emergency_reset')) {
       sessionStorage.setItem('cc_emergency_reset', '1');
       location.reload();
@@ -597,17 +606,11 @@
       localStorage.setItem(LAST_LOGIN_KEY, key);
     } catch (e) {
       if (e.__timeout) {
-        // 登录请求卡住，多半网络/storage 坏了，硬清理 sb-* 后让用户再点一次。
-        console.warn('[handleLogin] timeout — purging sb-* and prompting retry');
-        try {
-          const keys = [];
-          for (let i = 0; i < localStorage.length; i++) {
-            const k = localStorage.key(i);
-            if (k && k.startsWith('sb-')) keys.push(k);
-          }
-          for (const k of keys) localStorage.removeItem(k);
-        } catch (_) {}
-        $('#loginError').textContent = '登录请求超时，已清理本地会话，请再点一次登录';
+        // 登录请求卡住 = 网络慢/断。注意 SDK 要等 SIGNED_IN 回调（afterAuth 的整套
+        // loadAll）跑完才 resolve，所以这 10 秒其实包住了登录 + 首屏加载：很可能
+        // 登录早成功、只是加载慢。之前这里清 sb-* 会把刚拿到的会话删掉——不再清。
+        console.warn('[handleLogin] timeout — keeping tokens, prompting retry');
+        $('#loginError').textContent = '登录请求超时，请检查网络后再试一次';
       } else {
         $('#loginError').textContent = '登录失败：' + (e.message || '未知错误');
       }
@@ -2269,13 +2272,13 @@
         renderAll();
         syncEnd(gen, false);
       } catch (e) {
-        // 切回前台 loadAll 超时多半是 token 在后台被 rotate 出问题，
+        // 切回前台 loadAll 超时多半是网络还没恢复 / 连接挂死，
         // 或网络还没恢复——hardReset reload 替用户做手动刷新那一步，
         // 重建 supabase 客户端丢掉所有卡死的内部状态。reload 用过一次
         // 就只能落回 in-page forceReauth。
         if (isAuthError(e) || e.__timeout) {
-          if (hardReset('visibilitychange/loadAll')) return;
-          await forceReauth('会话异常已重置，请重新登录'); // showLogin 会把小标一起清掉
+          if (hardReset('visibilitychange/loadAll', isAuthError(e))) return;
+          await forceReauth(e.__timeout ? '网络持续无响应，请检查网络后重新登录' : '会话已过期，请重新登录'); // showLogin 会把小标一起清掉
           return;
         }
         console.warn('[visibilitychange] loadAll failed:', e);
@@ -2313,8 +2316,8 @@
       // 内部那些卡住的 promise，下一次 signInWithPassword 也会被拖垮——
       // 用户只能手动刷新。这里 hardReset 先 reload 一次替他做。
       if (isAuthError(e) || e.__timeout) {
-        if (hardReset('afterAuth/loadAll')) return;
-        await forceReauth('会话异常已重置，请重新登录');
+        if (hardReset('afterAuth/loadAll', isAuthError(e))) return;
+        await forceReauth(e.__timeout ? '网络持续无响应，请检查网络后重新登录' : '会话已过期，请重新登录');
         return;
       }
       // 非 auth 错误也必须把 init 遮罩收掉，否则 alert 关掉后用户
@@ -2369,13 +2372,14 @@
     }
 
     // 终极兜底：12 秒内启动流程没走到"登录页可见"或"今日页可见"任一稳定态，
-    // 就 hardReset（清 sb-* + reload 一次）。任何 await 卡死、forceReauth
+    // 就 hardReset（保留 token，reload 一次）。任何 await 卡死、forceReauth
     // 自己也卡的极端组合都能救回来。
     initWatchdog = setTimeout(() => {
-      if (hardReset('init/watchdog 12s')) return;
-      // 已经 reload 过一次还是死，让用户看到登录页手动重试。
-      // showLogin 会一并藏掉 initOverlay 并把按钮放回可点状态。
-      try { showLogin('启动反复失败，请检查网络或浏览器拦截'); } catch (_) {}
+      if (hardReset('init/watchdog 12s', false)) return; // 慢 ≠ 坏，token 留着
+      // 已经 reload 过一次还是没稳定下来：这时 session 可能已经拿到、afterAuth 还在
+      // 跑，光 showLogin 会把登录页盖在活着的会话上（此后手动登录会被去重吞掉）。
+      // 走 forceReauth 把会话态一并清干净，让用户重新登录。
+      forceReauth('启动反复无响应，请检查网络后重新登录').catch(() => {});
     }, 12000);
     function clearInitWatchdog() {
       if (initWatchdog) { clearTimeout(initWatchdog); initWatchdog = null; }
@@ -2427,7 +2431,7 @@
     // getSession 可能因 localStorage 里残留的坏 token 而抛错，
     // 也可能因为内部 refresh 卡死（fetch hang）而
     // 永远不返回——后者就是"关闭窗口重开后一直加载中"的根因。
-    // 抛错 → 清 sb-* 重登；超时 → 同样按"会话坏了"处理。
+    // 抛错 → 清 sb-* 重登；超时 → 保留 token reload 一次，再不行才重登。
     let existing = null;
     try {
       const r = await withTimeout(sb.auth.getSession(), 6000, 'init/getSession');
@@ -2438,9 +2442,10 @@
       // supabase 客户端内部那个挂住的 refresh promise 还在，下一次
       // signInWithPassword 也会被拖垮——hardReset reload 让客户端重建。
       // reload 过一次还死才落回 in-page 重登。
-      if (hardReset('init/getSession')) return;
+      // 抛错 = 持久化 session 坏了，清掉；超时 = 网络/refresh 卡住，token 留着。
+      if (hardReset('init/getSession', !e.__timeout)) return;
       initSettled = true; // 放行登录页上用户手动登录触发的 SIGNED_IN
-      await forceReauth(e.__timeout ? '会话异常已重置，请重新登录' : '会话已重置，请重新登录');
+      await forceReauth(e.__timeout ? '网络持续无响应，请检查网络后重新登录' : '会话已重置，请重新登录');
       clearInitWatchdog();
       return;
     }
