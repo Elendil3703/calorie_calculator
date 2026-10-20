@@ -1776,11 +1776,9 @@
     if (!item) {
       info.textContent = '先选一项冰箱里的食物';
       info.classList.remove('has-pick');
-      // 默认 g/ml 选项；没选时单位选什么都没影响。
-      if (unitSel.options.length === 0 || unitSel.options[0].value !== 'g') {
-        unitSel.innerHTML = '<option value="g">克 (g)</option><option value="ml">毫升 (ml)</option>';
-      }
-      unitSel.disabled = false;
+      // 没选时默认显示「克」；单位固定，不让用户选。
+      unitSel.innerHTML = '<option value="g">克 (g)</option>';
+      unitSel.disabled = true;
       return;
     }
     let text = `${item.name}：${fridgeKcalLabel(item)}`;
@@ -1789,16 +1787,11 @@
     if (vol) text += ` · ${volumeText(vol)}`;
     info.textContent = text;
     info.classList.add('has-pick');
-    // 计量是「每份」时摄入量单位只能是"份"；是「100g/ml」时让用户在 g/ml 里选。
-    if (item.basis === 'per_serving') {
-      unitSel.innerHTML = '<option value="份">份</option>';
-      unitSel.disabled = true;
-    } else {
-      const prev = unitSel.value;
-      unitSel.innerHTML = '<option value="g">克 (g)</option><option value="ml">毫升 (ml)</option>';
-      unitSel.disabled = false;
-      if (prev === 'g' || prev === 'ml') unitSel.value = prev;
-    }
+    // 计量是「每份」时摄入量单位只能是"份"；是「100g/ml」时统一按克，不再让用户选 g/ml。
+    unitSel.innerHTML = item.basis === 'per_serving'
+      ? '<option value="份">份</option>'
+      : '<option value="g">克 (g)</option>';
+    unitSel.disabled = true;
   }
   function resetFridgeForm() {
     editingFridgeId = null;
