@@ -1719,9 +1719,8 @@
       kcal = amount * Number(item.kcal);
       detail = `${round1(amount)} 份 × ${round1(item.kcal)} 大卡/份 · 来自冰箱`;
     } else {
-      const unit = $('#q_fridge_unit').value;
       kcal = (amount / 100) * Number(item.kcal);
-      detail = `${round1(amount)}${unit} × ${round1(item.kcal)} 大卡/100${unit} · 来自冰箱`;
+      detail = `${round1(amount)}g × ${round1(item.kcal)} 大卡/100g · 来自冰箱`;
     }
     const payload = { name: item.name, calories: round1(kcal), mode: 'quantity', detail };
     // 开启了容量追踪的条目：把本次的 ml/g 量和条目 id 记在 entry 上，
@@ -1770,15 +1769,13 @@
   }
   function updateFridgePickerInfo() {
     const info = $('#q_fridge_info');
-    const unitSel = $('#q_fridge_unit');
-    if (!info || !unitSel) return;
+    const unitEl = $('#q_fridge_unit');
+    if (!info || !unitEl) return;
     const item = getSelectedFridgeItem();
     if (!item) {
       info.textContent = '先选一项冰箱里的食物';
       info.classList.remove('has-pick');
-      // 没选时默认显示「克」；单位固定，不让用户选。
-      unitSel.innerHTML = '<option value="g">克 (g)</option>';
-      unitSel.disabled = true;
+      unitEl.textContent = '克';
       return;
     }
     let text = `${item.name}：${fridgeKcalLabel(item)}`;
@@ -1787,11 +1784,8 @@
     if (vol) text += ` · ${volumeText(vol)}`;
     info.textContent = text;
     info.classList.add('has-pick');
-    // 计量是「每份」时摄入量单位只能是"份"；是「100g/ml」时统一按克，不再让用户选 g/ml。
-    unitSel.innerHTML = item.basis === 'per_serving'
-      ? '<option value="份">份</option>'
-      : '<option value="g">克 (g)</option>';
-    unitSel.disabled = true;
+    // 单位跟着计量走，不用选：「每份」按份，「100g/ml」统一按克。
+    unitEl.textContent = item.basis === 'per_serving' ? '份' : '克';
   }
   function resetFridgeForm() {
     editingFridgeId = null;
@@ -2160,7 +2154,6 @@
       updateFridgePreview();
     });
     $('#q_fridge_amount').addEventListener('input', updateFridgePreview);
-    $('#q_fridge_unit').addEventListener('change', updateFridgePreview);
 
     $('#addFridgeBtn').addEventListener('click', handleAddOrSaveFridge);
     $('#cancelFridgeEditBtn').addEventListener('click', () => resetFridgeForm());
